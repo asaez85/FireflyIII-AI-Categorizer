@@ -146,13 +146,12 @@ func runBatch(cfg *config.Config, reg *job.Registry, pool *worker.Pool) {
 		}
 
 		j := reg.Create(txn.ID, "cli-batch", first.DestinationName, first.Description, amount)
-		txnID := txn.ID
-		splits := txn.Splits
+		txn := txn
 
 		pool.Submit(worker.Task{
 			JobID: j.ID,
 			Execute: func(ctx context.Context) error {
-				return pipe.Run(ctx, j, txnID, splits)
+				return pipe.Run(ctx, j, txn)
 			},
 		})
 	}

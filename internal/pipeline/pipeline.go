@@ -83,8 +83,8 @@ type RunOptions struct {
 }
 
 // Run executes the full classification pipeline for a queued job.
-func (p *Pipeline) Run(ctx context.Context, j *job.Job, transactionID string, splits []firefly.Split) error {
-	return p.RunWithOptions(ctx, j, transactionID, splits, RunOptions{
+func (p *Pipeline) Run(ctx context.Context, j *job.Job, txn firefly.Transaction) error {
+	return p.RunWithOptions(ctx, j, txn, RunOptions{
 		ClassifyCategory: true,
 		MatchDestination: p.destinationMatch,
 	})
@@ -92,8 +92,10 @@ func (p *Pipeline) Run(ctx context.Context, j *job.Job, transactionID string, sp
 
 // RunWithOptions executes the classification pipeline with fine-grained control
 // over which parts (category classification vs destination matching) are active.
-func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, transactionID string, splits []firefly.Split, opts RunOptions) error {
+// txn must contain every split in the group (see firefly.Client.UpdateTransaction).
+func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, txn firefly.Transaction, opts RunOptions) error {
 	p.registry.SetInProgress(j.ID)
+	transactionID := txn.ID
 
 	categories, err := p.getCategories(ctx)
 	if err != nil {
@@ -171,7 +173,7 @@ func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, transactionID
 		if historyMatchDestID != "" {
 			outcome.DestConfidence = "CLASSIFIED"
 		}
-		if err := p.firefly.UpdateTransaction(ctx, transactionID, splits, outcome); err != nil {
+		if err := p.firefly.UpdateTransaction(ctx, txn, outcome); err != nil {
 			p.registry.SetFailed(j.ID, err.Error())
 			return fmt.Errorf("update transaction: %w", err)
 		}
@@ -319,7 +321,7 @@ func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, transactionID
 		}
 	}
 
-	if err := p.firefly.UpdateTransaction(ctx, transactionID, splits, outcome); err != nil {
+	if err := p.firefly.UpdateTransaction(ctx, txn, outcome); err != nil {
 		p.registry.SetFailed(j.ID, err.Error())
 		return fmt.Errorf("update transaction: %w", err)
 	}

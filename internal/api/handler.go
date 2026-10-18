@@ -146,6 +146,7 @@ type webhookPayload struct {
 	Response string `json:"response"`
 	Content  struct {
 		ID           flexString         `json:"id"`
+		GroupTitle   string             `json:"group_title"`
 		Transactions []webhookSplitData `json:"transactions"`
 	} `json:"content"`
 }
@@ -222,7 +223,11 @@ func (h *Handler) webhookHandler(w http.ResponseWriter, r *http.Request) {
 	h.webhookPool.Submit(worker.Task{
 		JobID: j.ID,
 		Execute: func(ctx context.Context) error {
-			return h.getPipe().Run(ctx, j, transactionID, splits)
+			return h.getPipe().Run(ctx, j, firefly.Transaction{
+				ID:         transactionID,
+				GroupTitle: payload.Content.GroupTitle,
+				Splits:     splits,
+			})
 		},
 	})
 
@@ -308,15 +313,14 @@ func (h *Handler) batchRun(w http.ResponseWriter, r *http.Request) {
 		amount := parseAmount(first.Amount)
 		j := h.registry.Create(txn.ID, batchID, first.DestinationName, first.Description, amount)
 
-		txnID := txn.ID
-		splits := txn.Splits
+		txn := txn
 		localPipe := pipe
 
 		localOpts := pipeOpts
 		h.batchPool.Submit(worker.Task{
 			JobID: j.ID,
 			Execute: func(ctx context.Context) error {
-				return localPipe.RunWithOptions(ctx, j, txnID, splits, localOpts)
+				return localPipe.RunWithOptions(ctx, j, txn, localOpts)
 			},
 		})
 		enqueued++
@@ -698,7 +702,7 @@ func (h *Handler) categorizeTransaction(w http.ResponseWriter, r *http.Request) 
 		slog.Info("review: created expense account", "name", created.Name, "id", created.ID)
 	}
 
-	if err := fc.ApplyHumanCategory(r.Context(), id, txns[0].Splits, req.CategoryID, destID); err != nil {
+	if err := fc.ApplyHumanCategory(r.Context(), txns[0], req.CategoryID, destID); err != nil {
 		http.Error(w, fmt.Sprintf("failed to update transaction: %v", err), http.StatusBadGateway)
 		return
 	}

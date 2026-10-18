@@ -32,8 +32,9 @@ type Split struct {
 
 // Transaction is a Firefly III transaction group (may contain multiple splits).
 type Transaction struct {
-	ID     string
-	Splits []Split
+	ID         string
+	GroupTitle string // required by Firefly when updating a group with more than one split
+	Splits     []Split
 }
 
 // UpdateOutcome carries classification results needed to update a transaction.

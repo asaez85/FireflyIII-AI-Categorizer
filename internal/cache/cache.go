@@ -97,6 +97,9 @@ func (c *Cache) ensureFresh(ctx context.Context) error {
 	entries := make([]classifier.HistoricalEntry, 0, len(txns))
 	for _, txn := range txns {
 		for _, s := range txn.Splits {
+			if s.CategoryName == "" {
+				continue
+			}
 			amount, _ := strconv.ParseFloat(s.Amount, 64)
 			entries = append(entries, classifier.HistoricalEntry{
 				TransactionID:        txn.ID,

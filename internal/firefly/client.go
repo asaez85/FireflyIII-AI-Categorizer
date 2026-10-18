@@ -393,7 +393,7 @@ func (c *Client) GetDestAssumedWithdrawals(ctx context.Context) ([]Transaction, 
 // ApplyHumanCategory sets a category on a previously-flagged transaction.
 // It removes any AI outcome tags (needs-review, assumed) and adds a reviewed tag.
 // When destinationID is non-empty, it also sets the destination expense account.
-func (c *Client) ApplyHumanCategory(ctx context.Context, id string, splits []Split, categoryID, destinationID string) error {
+func (c *Client) ApplyHumanCategory(ctx context.Context, txn Transaction, categoryID, destinationID string) error {
 	aiOutcomeTags := map[string]bool{
 		c.tagPrefix + ":needs-review": true,
 		c.tagPrefix + ":assumed":      true,
@@ -410,11 +410,12 @@ func (c *Client) ApplyHumanCategory(ctx context.Context, id string, splits []Spl
 	type body struct {
 		ApplyRules   bool          `json:"apply_rules"`
 		FireWebhooks bool          `json:"fire_webhooks"`
+		GroupTitle   string        `json:"group_title,omitempty"`
 		Transactions []splitUpdate `json:"transactions"`
 	}
 
-	b := body{ApplyRules: true, FireWebhooks: false}
-	for _, s := range splits {
+	b := body{ApplyRules: true, FireWebhooks: false, GroupTitle: groupTitle(txn)}
+	for _, s := range txn.Splits {
 		tags := make([]string, 0, len(s.Tags))
 		for _, t := range s.Tags {
 			if !aiOutcomeTags[t] {
@@ -435,7 +436,7 @@ func (c *Client) ApplyHumanCategory(ctx context.Context, id string, splits []Spl
 		b.Transactions = append(b.Transactions, su)
 	}
 
-	u := fmt.Sprintf("%s/api/v1/transactions/%s", c.baseURL, id)
+	u := fmt.Sprintf("%s/api/v1/transactions/%s", c.baseURL, txn.ID)
 	return c.put(ctx, u, b)
 }
 
@@ -501,7 +502,9 @@ func (c *Client) GetWithdrawalsPage(ctx context.Context, page, limit int, startD
 }
 
 // UpdateTransaction writes classification results back to Firefly III.
-func (c *Client) UpdateTransaction(ctx context.Context, id string, splits []Split, outcome UpdateOutcome) error {
+// txn must contain every split in the group: Firefly deletes any split that is
+// omitted from the update.
+func (c *Client) UpdateTransaction(ctx context.Context, txn Transaction, outcome UpdateOutcome) error {
 	tag := c.tagForOutcome(outcome.Outcome)
 
 	type splitUpdate struct {
@@ -514,11 +517,12 @@ func (c *Client) UpdateTransaction(ctx context.Context, id string, splits []Spli
 	type body struct {
 		ApplyRules   bool          `json:"apply_rules"`
 		FireWebhooks bool          `json:"fire_webhooks"`
+		GroupTitle   string        `json:"group_title,omitempty"`
 		Transactions []splitUpdate `json:"transactions"`
 	}
 
-	b := body{ApplyRules: true, FireWebhooks: false}
-	for _, s := range splits {
+	b := body{ApplyRules: true, FireWebhooks: false, GroupTitle: groupTitle(txn)}
+	for _, s := range txn.Splits {
 		tags := make([]string, len(s.Tags))
 		copy(tags, s.Tags)
 		if !contains(tags, tag) {
@@ -545,8 +549,21 @@ func (c *Client) UpdateTransaction(ctx context.Context, id string, splits []Spli
 		b.Transactions = append(b.Transactions, su)
 	}
 
-	u := fmt.Sprintf("%s/api/v1/transactions/%s", c.baseURL, id)
+	u := fmt.Sprintf("%s/api/v1/transactions/%s", c.baseURL, txn.ID)
 	return c.put(ctx, u, b)
+}
+
+// groupTitle returns the title to send with a group update. Firefly requires
+// one when the group has more than one split, so fall back to the first
+// split's description if the group has none.
+func groupTitle(txn Transaction) string {
+	if len(txn.Splits) < 2 {
+		return ""
+	}
+	if txn.GroupTitle != "" {
+		return txn.GroupTitle
+	}
+	return txn.Splits[0].Description
 }
 
 func (c *Client) tagForOutcome(outcome string) string {
@@ -574,6 +591,9 @@ func buildNotes(existing string, outcome UpdateOutcome) string {
 	return strings.Join(parts, "\n\n")
 }
 
+// fetchTransactions returns every transaction group in which at least one split
+// satisfies keep. Groups are returned whole (all splits) so they can be safely
+// passed to UpdateTransaction.
 func (c *Client) fetchTransactions(ctx context.Context, params url.Values, keep func(Split) bool) ([]Transaction, error) {
 	var txns []Transaction
 	for page := 1; ; page++ {
@@ -591,15 +611,11 @@ func (c *Client) fetchTransactions(ctx context.Context, params url.Values, keep 
 
 		for _, item := range resp.Data {
 			txn := toTransaction(item)
-			var kept []Split
 			for _, s := range txn.Splits {
 				if keep(s) {
-					kept = append(kept, s)
+					txns = append(txns, txn)
+					break
 				}
-			}
-			if len(kept) > 0 {
-				txn.Splits = kept
-				txns = append(txns, txn)
 			}
 		}
 
@@ -611,7 +627,7 @@ func (c *Client) fetchTransactions(ctx context.Context, params url.Values, keep 
 }
 
 func toTransaction(item transactionData) Transaction {
-	txn := Transaction{ID: item.ID}
+	txn := Transaction{ID: item.ID, GroupTitle: item.Attributes.GroupTitle}
 	for _, s := range item.Attributes.Transactions {
 		split := Split{
 			JournalID:       s.TransactionJournalID,
@@ -754,6 +770,7 @@ type splitData struct {
 }
 
 type transactionAttributes struct {
+	GroupTitle   string      `json:"group_title"`
 	Transactions []splitData `json:"transactions"`
 }
 
