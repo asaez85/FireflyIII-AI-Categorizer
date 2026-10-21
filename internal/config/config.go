@@ -33,6 +33,9 @@ type Config struct {
 	HistoryLookbackDays int
 	HistoryContextLimit int
 
+	ReviewCacheTTL     time.Duration
+	ReviewLookbackDays int
+
 	DestinationMatchEnabled bool
 
 	SearchEngine string // "google", "duckduckgo", or "" (disabled)
@@ -73,6 +76,14 @@ func Load() (*Config, *Store, error) {
 		return nil, nil, fmt.Errorf("invalid HISTORY_CACHE_TTL %q: %w", ttlStr, err)
 	}
 	cfg.HistoryCacheTTL = ttl
+
+	reviewTTLStr := getEnv("REVIEW_CACHE_TTL", "30s")
+	reviewTTL, err := time.ParseDuration(reviewTTLStr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid REVIEW_CACHE_TTL %q: %w", reviewTTLStr, err)
+	}
+	cfg.ReviewCacheTTL = reviewTTL
+	cfg.ReviewLookbackDays = getEnvInt("REVIEW_LOOKBACK_DAYS", 365)
 
 	storeFile := getEnv("CONFIG_FILE", StoreFile)
 	store, err := NewStore(storeFile)

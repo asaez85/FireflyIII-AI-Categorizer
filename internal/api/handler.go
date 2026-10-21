@@ -33,10 +33,11 @@ type Handler struct {
 	batchPool   *worker.Pool
 
 	// Hot-swappable clients, protected by mu.
-	mu        sync.RWMutex
-	fc        *firefly.Client
-	histCache *cache.Cache
-	pipe      *pipeline.Pipeline
+	mu          sync.RWMutex
+	fc          *firefly.Client
+	histCache   *cache.Cache
+	reviewCache *cache.ReviewCache
+	pipe        *pipeline.Pipeline
 
 	// Transfer conversion history: description → asset account ID.
 	transferHistory   map[string]string
@@ -191,6 +192,9 @@ func (h *Handler) webhookHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"skipped": true, "reason": fmt.Sprintf("transaction type %q is not a withdrawal", first.Type)})
 		return
 	}
+
+	// Invalidate review cache: a new transaction may change review groups.
+	h.invalidateReviewCache()
 	if first.CategoryID != "" && first.CategoryID != "0" {
 		slog.Debug("webhook skipped: category already set", "category_id", first.CategoryID, "txn_id", payload.Content.ID)
 		writeJSON(w, http.StatusOK, map[string]interface{}{"skipped": true, "reason": "category already set"})
@@ -594,7 +598,17 @@ func (h *Handler) getReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rg, err := fc.GetReviewGroups(r.Context())
+	h.mu.RLock()
+	rc := h.reviewCache
+	h.mu.RUnlock()
+
+	var rg *firefly.ReviewGroups
+	var err error
+	if rc != nil {
+		rg, err = rc.GetReviewGroups(r.Context())
+	} else {
+		rg, err = fc.GetReviewGroups(r.Context(), h.effectiveConfig().ReviewLookbackDays)
+	}
 	if err != nil {
 		http.Error(w, fmt.Sprintf("failed to fetch review groups: %v", err), http.StatusBadGateway)
 		return
@@ -707,6 +721,7 @@ func (h *Handler) categorizeTransaction(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	h.invalidateReviewCache()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -884,6 +899,8 @@ func (h *Handler) convertToTransfer(w http.ResponseWriter, r *http.Request) {
 	h.transferHistoryMu.Lock()
 	h.transferHistory[strings.ToLower(s.Description)] = req.DestinationID
 	h.transferHistoryMu.Unlock()
+
+	h.invalidateReviewCache()
 
 	slog.Info("converted withdrawal to transfer", "old_id", id, "description", s.Description)
 	w.WriteHeader(http.StatusNoContent)
@@ -1132,6 +1149,7 @@ func (h *Handler) reloadClients() error {
 		h.mu.Lock()
 		h.fc = nil
 		h.histCache = nil
+		h.reviewCache = nil
 		h.pipe = nil
 		h.mu.Unlock()
 		return fmt.Errorf("FIREFLY_URL and FIREFLY_PERSONAL_TOKEN are required")
@@ -1139,6 +1157,7 @@ func (h *Handler) reloadClients() error {
 
 	fc := firefly.New(cfg.FireflyURL, cfg.FireflyToken, cfg.TagPrefix)
 	ca := cache.New(fc, cfg.HistoryCacheTTL, cfg.HistoryLookbackDays)
+	rc := cache.NewReviewCache(fc, cfg.ReviewCacheTTL, cfg.ReviewLookbackDays)
 
 	cl, err := classifier.Build(classifier.BuildParams{
 		Provider:      cfg.AIProvider,
@@ -1151,11 +1170,13 @@ func (h *Handler) reloadClients() error {
 		DeepseekModel: cfg.DeepseekModel,
 		CustomContext: cfg.CustomSystemContext,
 	})
+
 	if err != nil {
 		// Set firefly client even if AI fails — categories/transactions still work.
 		h.mu.Lock()
 		h.fc = fc
 		h.histCache = ca
+		h.reviewCache = rc
 		h.pipe = nil
 		h.mu.Unlock()
 		return fmt.Errorf("classifier init: %w", err)
@@ -1166,6 +1187,7 @@ func (h *Handler) reloadClients() error {
 	h.mu.Lock()
 	h.fc = fc
 	h.histCache = ca
+	h.reviewCache = rc
 	h.pipe = pipe
 	h.mu.Unlock()
 
@@ -1177,6 +1199,17 @@ func (h *Handler) getFC() *firefly.Client {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.fc
+}
+
+// invalidateReviewCache invalidates the review groups cache so the next
+// /api/review call fetches fresh data. Safe to call when the cache is nil.
+func (h *Handler) invalidateReviewCache() {
+	h.mu.RLock()
+	rc := h.reviewCache
+	h.mu.RUnlock()
+	if rc != nil {
+		rc.Invalidate()
+	}
 }
 
 func (h *Handler) getPipe() *pipeline.Pipeline {

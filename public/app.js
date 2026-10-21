@@ -573,6 +573,83 @@ var pendingAccounts = []; // [{name}], new accounts typed on this page (not yet 
 var allReviewGroups = []; // the live queue; submitted groups are removed, skipped groups cycle to end
 var REVIEW_BATCH_SIZE = 8;
 
+// ── Render caches (avoid regenerating identical HTML per group) ──
+var _catOptionsCache = null;      // cached category <option> HTML (no selection)
+var _catOptionsCacheKey = '';     // key: categories JSON signature
+var _acctDatalistCache = null;    // cached account datalist <option> HTML
+var _acctDatalistCacheKey = '';   // key: accounts + pending signature
+var _rafScheduled = false;        // guards requestAnimationFrame batching
+var _pendingRafCallbacks = [];    // callbacks batched into next frame
+
+function getCategoryOptions(selectedId) {
+    // Build once and cache the full option list; clone via template for per-group selection.
+    var cats = reviewCategories || [];
+    var key = cats.map(function(c) { return c.id + ':' + c.name; }).join('|');
+    if (!_catOptionsCache || _catOptionsCacheKey !== key) {
+        var html = '<option value="" disabled selected hidden>—</option>';
+        html += cats.map(function(c) {
+            return '<option value="' + esc(c.id) + '">' + esc(c.name) + '</option>';
+        }).join('');
+        _catOptionsCache = html;
+        _catOptionsCacheKey = key;
+    }
+    if (!selectedId) return _catOptionsCache;
+    // Insert selected attribute on the matching option (cheap string replace).
+    return _catOptionsCache.replace(
+        '<option value="' + esc(selectedId) + '">',
+        '<option value="' + esc(selectedId) + '" selected>'
+    );
+}
+
+function getAcctDatalistOptions() {
+    // Single shared datalist for all destination inputs — avoids N copies of 1686 options.
+    var accts = reviewAccounts || [];
+    var key = accts.map(function(a) { return a.id + ':' + a.name; }).join('|')
+        + '||' + pendingAccounts.map(function(a) { return a.name; }).join('|');
+    if (!_acctDatalistCache || _acctDatalistCacheKey !== key) {
+        var html = accts.map(function(a) {
+            return '<option value="' + esc(a.name) + '" data-id="' + esc(a.id) + '">';
+        }).join('');
+        html += pendingAccounts.map(function(a) {
+            return '<option value="' + esc(a.name) + '" data-id="new:' + esc(a.name) + '">';
+        }).join('');
+        _acctDatalistCache = html;
+        _acctDatalistCacheKey = key;
+    }
+    return _acctDatalistCache;
+}
+
+function invalidateReviewCaches() {
+    _catOptionsCache = null;
+    _catOptionsCacheKey = '';
+    _acctDatalistCache = null;
+    _acctDatalistCacheKey = '';
+}
+
+// Ensure the shared datalist exists in the document (created once, reused by all inputs).
+function ensureSharedDatalist() {
+    var dl = document.getElementById('review-dest-shared-list');
+    if (!dl) {
+        dl = document.createElement('datalist');
+        dl.id = 'review-dest-shared-list';
+        document.body.appendChild(dl);
+    }
+    return dl;
+}
+
+function scheduleFrame(cb) {
+    // Batch multiple DOM updates into a single animation frame.
+    _pendingRafCallbacks.push(cb);
+    if (_rafScheduled) return;
+    _rafScheduled = true;
+    requestAnimationFrame(function() {
+        var cbs = _pendingRafCallbacks;
+        _pendingRafCallbacks = [];
+        _rafScheduled = false;
+        for (var i = 0; i < cbs.length; i++) cbs[i]();
+    });
+}
+
 async function loadReview(silent) {
     var body = document.getElementById('review-body');
     var actionBar = document.getElementById('review-action-bar');
@@ -585,25 +662,42 @@ async function loadReview(silent) {
         transferBody.innerHTML = '<p class="text-muted"><i class="fa fa-spinner fa-spin"></i> Loading&hellip;</p>';
     }
     try {
-        var catRes = fetch('/api/categories');
-        var reviewRes = fetch('/api/review');
-        var acctRes = fetch('/api/accounts');
-        catRes = await catRes;
-        reviewRes = await reviewRes;
-        acctRes = await acctRes;
+        // Fire all three fetches in parallel (no sequential await chain).
+        var catPromise = fetch('/api/categories');
+        var reviewPromise = fetch('/api/review');
+        var acctPromise = fetch('/api/accounts');
 
-        if (catRes.status === 503 || reviewRes.status === 503) {
+        // Resolve categories and accounts first (fast) — don't block on review.
+        var catRes = await catPromise;
+        var acctRes = await acctPromise;
+
+        if (catRes.status === 503) {
             if (!silent) {
                 body.innerHTML = '<div class="alert alert-warning"><i class="fa fa-warning"></i> Firefly III is not configured. Set credentials in Settings.</div>';
             }
             return;
         }
         if (!catRes.ok) throw new Error(await catRes.text());
-        if (!reviewRes.ok) throw new Error(await reviewRes.text());
 
         reviewCategories = (await catRes.json()) || [];
-        var freshGroups = (await reviewRes.json()) || [];
         reviewAccounts = (acctRes.ok) ? (await acctRes.json()) || [] : [];
+        // Invalidate caches since categories/accounts changed.
+        invalidateReviewCaches();
+        // Ensure shared datalist is populated.
+        var dl = ensureSharedDatalist();
+        dl.innerHTML = getAcctDatalistOptions();
+
+        // Now await review (the slow one) — categories/accounts already resolved.
+        var reviewRes = await reviewPromise;
+        if (reviewRes.status === 503) {
+            if (!silent) {
+                body.innerHTML = '<div class="alert alert-warning"><i class="fa fa-warning"></i> Firefly III is not configured. Set credentials in Settings.</div>';
+            }
+            return;
+        }
+        if (!reviewRes.ok) throw new Error(await reviewRes.text());
+
+        var freshGroups = (await reviewRes.json()) || [];
 
         if (silent) {
             // Background poll: only update the badge count and progress indicator.
@@ -646,10 +740,21 @@ function renderCurrentBatch() {
     reviewGroupMap = {};
     reviewDestFocused = {};
     pendingAccounts = [];
+    // Invalidate account datalist cache since pendingAccounts was reset.
+    _acctDatalistCache = null;
+    _acctDatalistCacheKey = '';
+
+    // Use DocumentFragment to batch all DOM insertions — single reflow.
+    var frag = document.createDocumentFragment();
 
     // Main Review section
     if (batch.length) {
-        body.innerHTML = renderReviewGroups(batch);
+        var mainHtml = renderReviewGroups(batch);
+        var temp = document.createElement('div');
+        temp.innerHTML = mainHtml;
+        while (temp.firstChild) frag.appendChild(temp.firstChild);
+        body.innerHTML = '';
+        body.appendChild(frag);
         actionBar.style.display = '';
         updateSubmitBar();
     } else {
@@ -657,10 +762,16 @@ function renderCurrentBatch() {
         actionBar.style.display = 'none';
     }
 
-    // Transfer section
+    // Transfer section — also use fragment.
+    var frag2 = document.createDocumentFragment();
     if (transferGroups.length) {
         transferSection.style.display = '';
-        transferBody.innerHTML = renderTransferSection(transferGroups);
+        var tHtml = renderTransferSection(transferGroups);
+        var temp2 = document.createElement('div');
+        temp2.innerHTML = tHtml;
+        while (temp2.firstChild) frag2.appendChild(temp2.firstChild);
+        transferBody.innerHTML = '';
+        transferBody.appendChild(frag2);
     } else {
         transferSection.style.display = '';
         transferBody.innerHTML = '<p class="text-muted">No transactions flagged for transfer conversion.</p>';
@@ -844,21 +955,11 @@ function renderDestReviewGroup(g) {
         }
     }
 
-    var cats = reviewCategories || [];
-    var catOptions = '<option value="" disabled selected hidden>—</option>'
-        + cats.map(function (c) {
-            var sel = (g.category_id && c.id === g.category_id) ? ' selected' : '';
-            return '<option value="' + esc(c.id) + '"' + sel + '>' + esc(c.name) + '</option>';
-        }).join('');
+    // Use cached category options.
+    var catOptions = getCategoryOptions(g.category_id || null);
 
-    // Build destination input.
+    // Build destination input — use shared datalist.
     var matchedAttr = currentDestID ? ' data-matched-id="' + esc(currentDestID) + '"' : '';
-    var acctDataOptions = accts.map(function (a) {
-        return '<option value="' + esc(a.name) + '" data-id="' + esc(a.id) + '">';
-    }).join('')
-        + pendingAccounts.map(function (a) {
-            return '<option value="' + esc(a.name) + '" data-id="new:' + esc(a.name) + '">';
-        }).join('');
 
     var destHint = currentDestName
         ? '<p style="font-size:12px;margin:0 0 6px;color:#8a6d3b"><i class="fa fa-magic"></i> AI assumed destination: <strong>' + esc(currentDestName) + '</strong> &mdash; correct below if needed.</p>'
@@ -890,13 +991,12 @@ function renderDestReviewGroup(g) {
         + ' <span style="font-weight:400;color:#848484">(expense / payee)</span></label>'
         + '<div style="display:flex;gap:6px;align-items:center">'
         + '<input type="text" class="form-control input-sm" id="review-dest-' + gi + '"'
-        + ' list="review-dest-list-' + gi + '" placeholder="Search or type a new account…"'
+        + ' list="review-dest-shared-list" placeholder="Search or type a new account…"'
         + ' value="' + esc(currentDestName) + '"' + matchedAttr
         + ' onfocus="onReviewDestFocus(' + gi + ')"'
         + ' oninput="onReviewDestInput(' + gi + ')"'
         + ' onblur="onReviewDestBlur(' + gi + ')"'
         + ' style="flex:1">'
-        + '<datalist id="review-dest-list-' + gi + '">' + acctDataOptions + '</datalist>'
         + '<span id="review-dest-badge-' + gi + '" class="label label-info"'
         + ' style="display:none;flex-shrink:0;font-size:10px;white-space:nowrap">'
         + '<i class="fa fa-plus-circle"></i> NEW</span>'
@@ -1080,16 +1180,17 @@ async function autoSuggestTransfer(gi, desc) {
 }
 
 function updateTransferButtons() {
-    document.querySelectorAll('[id^="transfer-dest-"]').forEach(function (sel) {
-        var idParts = sel.id.replace('transfer-dest-', '').split('-');
-        var gi = idParts[0];
-        var btn = document.getElementById('btn-convert-' + gi);
+    // Cache the list of transfer groups once instead of re-querying per select.
+    var groups = document.querySelectorAll('#grid-transfers .review-group');
+    groups.forEach(function (groupEl) {
+        var gi = groupEl.id.replace('review-group-', '');
         var mainSel = document.getElementById('transfer-dest-' + gi);
+        var btn = document.getElementById('btn-convert-' + gi);
         if (btn) btn.disabled = !(mainSel && mainSel.value);
         var btnExp = document.getElementById('btn-convert-exp-' + gi);
         if (btnExp) {
             var allFilled = true;
-            var indivSels = document.querySelectorAll('[id^="transfer-dest-' + gi + '-"]');
+            var indivSels = groupEl.querySelectorAll('[id^="transfer-dest-' + gi + '-"]');
             indivSels.forEach(function (s) { if (!s.value) allFilled = false; });
             btnExp.disabled = !allFilled;
         }
@@ -1185,11 +1286,8 @@ function renderReviewGroup(g, isAssumed) {
             + '<i class="fa fa-magic"></i> AI guessed: <strong>' + esc(g.category_name) + '</strong></p>'
         : '';
 
-    var catOptions = '<option value="" disabled selected hidden>—</option>'
-        + (reviewCategories || []).map(function (c) {
-            var sel = (isAssumed && g.category_id && c.id === g.category_id) ? ' selected' : '';
-            return '<option value="' + esc(c.id) + '"' + sel + '>' + esc(c.name) + '</option>';
-        }).join('');
+    // Use cached category options (built once for all groups).
+    var catOptions = getCategoryOptions(isAssumed && g.category_id ? g.category_id : null);
 
     // Destination account controls — always available for manual review.
     var destHtml = '';
@@ -1201,6 +1299,11 @@ function renderReviewGroup(g, isAssumed) {
             fetch('/api/accounts').then(function (r) { return r.ok ? r.json() : []; }).then(function (accts) {
                 reviewAccounts = accts || [];
                 reviewAccountsFetching = false;
+                // Invalidate cache and update shared datalist.
+                _acctDatalistCache = null;
+                _acctDatalistCacheKey = '';
+                var dl = ensureSharedDatalist();
+                dl.innerHTML = getAcctDatalistOptions();
                 // Re-render the current batch to show the destination controls.
                 renderCurrentBatch();
             }).catch(function () { reviewAccountsFetching = false; });
@@ -1223,26 +1326,19 @@ function renderReviewGroup(g, isAssumed) {
             matchedAttr = ' data-matched-id="' + esc(currentDestID) + '"';
         }
 
-        var acctDataOptions = ra.map(function (a) {
-            return '<option value="' + esc(a.name) + '" data-id="' + esc(a.id) + '">';
-        }).join('')
-            + pendingAccounts.map(function (a) {
-                return '<option value="' + esc(a.name) + '" data-id="new:' + esc(a.name) + '">';
-            }).join('');
-
+        // Use SHARED datalist — no per-group copy of 1686 options.
         destHtml = '<div style="margin-top:8px" class="review-dest-container">'
             + '<label style="font-size:12px;font-weight:600;display:block;margin-bottom:3px">'
             + '<i class="fa fa-building-o"></i> Destination Account'
             + ' <span style="font-weight:400;color:#848484">(expense / payee)</span></label>'
             + '<div style="display:flex;gap:6px;align-items:center">'
             + '<input type="text" class="form-control input-sm" id="review-dest-' + gi + '"'
-            + ' list="review-dest-list-' + gi + '" placeholder="Search or type a new account…"'
+            + ' list="review-dest-shared-list" placeholder="Search or type a new account…"'
             + ' value="' + esc(currentDestName) + '"' + matchedAttr
             + ' onfocus="onReviewDestFocus(' + gi + ')"'
             + ' oninput="onReviewDestInput(' + gi + ')"'
             + ' onblur="onReviewDestBlur(' + gi + ')"'
             + ' style="flex:1">'
-            + '<datalist id="review-dest-list-' + gi + '">' + acctDataOptions + '</datalist>'
             + '<span id="review-dest-badge-' + gi + '" class="label label-info"'
             + ' style="display:none;flex-shrink:0;font-size:10px;white-space:nowrap">'
             + '<i class="fa fa-plus-circle"></i> NEW</span>'
@@ -1292,7 +1388,7 @@ function onReviewDestFocus(gi) {
 }
 
 // On input: check if the typed name exactly matches an existing account and
-// record its ID for later submission. The datalist provides native suggestions.
+// record its ID for later submission. The shared datalist provides native suggestions.
 // The NEW badge is hidden while the user is typing.
 function onReviewDestInput(gi) {
     var input = document.getElementById('review-dest-' + gi);
@@ -1302,9 +1398,9 @@ function onReviewDestInput(gi) {
     if (badge) badge.style.display = 'none';
 
     var val = input.value.trim();
-    // Check if the typed name exactly matches an account in the datalist.
+    // Check if the typed name exactly matches an account in the SHARED datalist.
     var matchedID = '';
-    var list = document.getElementById('review-dest-list-' + gi);
+    var list = document.getElementById('review-dest-shared-list');
     if (list && val) {
         var options = list.querySelectorAll('option');
         for (var i = 0; i < options.length; i++) {
@@ -1350,18 +1446,12 @@ function onReviewDestBlur(gi) {
     updateSubmitBar();
 }
 
-// Refresh all destination datalists to include pending (not-yet-saved) accounts.
+// Refresh the shared datalist to include pending (not-yet-saved) accounts.
 function refreshDatalists() {
-    var pendingHTML = pendingAccounts.map(function (a) {
-        return '<option value="' + esc(a.name) + '" data-id="new:' + esc(a.name) + '">';
-    }).join('');
-    var lists = document.querySelectorAll('[id^="review-dest-list-"]');
-    lists.forEach(function (list) {
-        // Remove stale pending options, then append fresh ones.
-        var old = list.querySelectorAll('option[data-id^="new:"]');
-        for (var i = 0; i < old.length; i++) { old[i].remove(); }
-        list.insertAdjacentHTML('beforeend', pendingHTML);
-    });
+    _acctDatalistCache = null;
+    _acctDatalistCacheKey = '';
+    var dl = document.getElementById('review-dest-shared-list');
+    if (dl) dl.innerHTML = getAcctDatalistOptions();
 }
 
 // When the category changes on a review card, hide the destination controls
@@ -1408,6 +1498,7 @@ function skipReviewGroup(gi) {
 
 function updateSubmitBar() {
     // Only count review groups (needs-review + assumed), not transfers.
+    // Cache the result and only re-compute when the DOM actually changes.
     var groups = document.querySelectorAll('#review-body .review-group');
     var total = groups.length;
     var categorized = 0;
@@ -1418,9 +1509,13 @@ function updateSubmitBar() {
     });
     var btn = document.getElementById('btn-submit-all');
     if (!btn) return;
-    btn.disabled = categorized === 0;
-    btn.innerHTML = '<i class="fa fa-check"></i> Apply ' + categorized + ' of ' + total
+    // Avoid redundant DOM writes when the text hasn't changed.
+    var newText = '<i class="fa fa-check"></i> Apply ' + categorized + ' of ' + total
         + ' group' + (total === 1 ? '' : 's');
+    if (btn.innerHTML !== newText) {
+        btn.disabled = categorized === 0;
+        btn.innerHTML = newText;
+    }
 }
 
 async function submitAllReview() {
