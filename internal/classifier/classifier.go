@@ -13,6 +13,14 @@ const (
 	NeedsReview Outcome = "NEEDS_REVIEW"
 )
 
+// Decision sources, recorded on Result.Source and shown in the Jobs UI.
+const (
+	SourceHistory = "history"
+	SourceJev     = "jev"
+	SourceJevLLM  = "jev+llm"
+	SourceLLM     = "llm"
+)
+
 type HistoricalEntry struct {
 	TransactionID        string
 	DestinationName      string
@@ -59,6 +67,10 @@ type DestinationResult struct {
 	Name       string // desired account name
 	Action     string // "MATCH" or "CREATE"
 	Confidence string // "CLASSIFIED" or "ASSUMED"
+
+	// ID is the existing account chosen for a MATCH, when known. Callers should
+	// prefer it over Name, which may be ambiguous across case-only duplicates.
+	ID string
 }
 
 type Request struct {
@@ -80,6 +92,11 @@ type Request struct {
 	// won't bother computing a destination even if expense accounts are provided.
 	CategoryOnly bool
 
+	// DestinationOnly signals that the category is already decided or not wanted,
+	// so the caller only needs the destination. The cascade then escalates to the
+	// LLM whenever Jev is unsure about the payee, regardless of category confidence.
+	DestinationOnly bool
+
 	// SystemPromptOverride replaces the built-in system prompt when non-empty.
 	// Used for special-purpose LLM calls like transfer destination suggestion.
 	SystemPromptOverride string
@@ -96,6 +113,9 @@ type Result struct {
 	// Destination is set when destination-account matching was enabled
 	// and the LLM returned a valid destination suggestion.
 	Destination *DestinationResult
+
+	// Source identifies which stage produced this result. Empty means "llm".
+	Source string
 }
 
 type Classifier interface {

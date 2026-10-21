@@ -2,7 +2,6 @@ package pipeline
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
@@ -188,7 +187,7 @@ func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, txn firefly.T
 				}
 			}
 		}
-		p.registry.SetFinished(j.ID, string(classifier.Classified), historyMatchCat, reason, "", "", "", destName, destAction)
+		p.registry.SetFinished(j.ID, string(classifier.Classified), historyMatchCat, reason, "", "", "", destName, destAction, classifier.SourceHistory)
 		p.cache.Append(classifier.HistoricalEntry{
 			TransactionID:        transactionID,
 			DestinationName:      j.DestinationName,
@@ -222,6 +221,9 @@ func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, txn firefly.T
 		ExpenseAccounts:      clAccounts,
 		DestinationMatching:  opts.MatchDestination,
 		CategoryOnly:         opts.ClassifyCategory && !opts.MatchDestination,
+		// The category is either not wanted or already fixed by history; the
+		// classifier is only consulted for the destination.
+		DestinationOnly: opts.MatchDestination && (!opts.ClassifyCategory || historyMatchCat != ""),
 	})
 	if err != nil {
 		p.registry.SetFailed(j.ID, err.Error())
@@ -255,7 +257,7 @@ func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, txn firefly.T
 		}
 		outcome.Category = historyMatchCat
 		outcome.Outcome = string(classifier.Classified)
-		outcome.Reason = fmt.Sprintf("Auto-matched from %d previous transactions. AI was consulted for destination.", histCatCount)
+		outcome.Reason = historyOverrideReason(histCatCount, result.Source)
 	}
 
 	// Process destination account result (when enabled and valid).
@@ -267,12 +269,7 @@ func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, txn firefly.T
 
 		switch result.Destination.Action {
 		case "MATCH":
-			for _, a := range expenseAccounts {
-				if strings.EqualFold(a.Name, result.Destination.Name) {
-					outcome.DestinationID = a.ID
-					break
-				}
-			}
+			outcome.DestinationID = resolveMatchedAccount(expenseAccounts, result.Destination).ID
 			if outcome.DestinationID == "" {
 				slog.Warn("destination MATCH failed to find account", "name", result.Destination.Name)
 				destAccount = ""
@@ -341,6 +338,10 @@ func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, txn firefly.T
 		finishedReason = outcome.Reason
 	}
 
+	source := result.Source
+	if source == "" {
+		source = classifier.SourceLLM
+	}
 	p.registry.SetFinished(
 		j.ID,
 		finishedOutcome,
@@ -351,6 +352,7 @@ func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, txn firefly.T
 		result.RawResponse,
 		destAccount,
 		destAction,
+		source,
 	)
 
 	cachedCategory := finishedCategory
@@ -452,6 +454,35 @@ func tryDestinationHistoryMatch(history []classifier.HistoricalEntry, amount *fl
 	return best, bestCount
 }
 
+// resolveMatchedAccount finds the expense account for a MATCH destination,
+// preferring the account ID the classifier chose and falling back to a
+// case-insensitive name match. It returns a zero Account when nothing matches.
+func resolveMatchedAccount(accounts []firefly.Account, dest *classifier.DestinationResult) firefly.Account {
+	if dest.ID != "" {
+		for _, a := range accounts {
+			if a.ID == dest.ID {
+				return a
+			}
+		}
+	}
+	for _, a := range accounts {
+		if strings.EqualFold(a.Name, dest.Name) {
+			return a
+		}
+	}
+	return firefly.Account{}
+}
+
+// historyOverrideReason explains a category taken from history when the
+// classifier was only consulted for the destination.
+func historyOverrideReason(count int, source string) string {
+	consulted := "AI"
+	if source == classifier.SourceJev {
+		consulted = "Jev"
+	}
+	return fmt.Sprintf("Auto-matched from %d previous transactions. %s was consulted for destination.", count, consulted)
+}
+
 func derefAmount(a *float64) float64 {
 	if a == nil {
 		return 0
@@ -524,55 +555,8 @@ func (p *Pipeline) getExpenseAccounts(ctx context.Context) ([]firefly.Account, e
 	return accts, nil
 }
 
-// TransferSuggestion is the result of suggesting a destination asset account
-// for a transfer conversion.
-type TransferSuggestion struct {
-	AccountName string
-	RawResponse string
-}
-
-// SuggestTransfer asks the LLM to pick the best destination asset account for
-// a transfer, given the transaction description and a list of available accounts.
-func (p *Pipeline) SuggestTransfer(ctx context.Context, description string, accounts []classifier.AccountCandidate) (TransferSuggestion, error) {
-	var acctList string
-	for _, a := range accounts {
-		acctList += "  - " + a.Name + "\n"
-	}
-
-	result, err := p.classifier.Classify(ctx, classifier.Request{
-		SystemPromptOverride: fmt.Sprintf(
-			"You select the best destination asset account for a transfer.\n"+
-				"The transaction description is: %q\n\n"+
-				"Available asset accounts:\n%s\n"+
-				"Pick the most likely destination account.\n"+
-				"Respond with ONLY valid JSON: {\"account\": \"<exact account name from the list>\"}",
-			description, acctList,
-		),
-	})
-	if err != nil {
-		return TransferSuggestion{}, err
-	}
-
-	var parsed struct {
-		Account string `json:"account"`
-	}
-	cleaned := strings.TrimSpace(result.RawResponse)
-	if strings.HasPrefix(cleaned, "```") {
-		end := strings.Index(cleaned[3:], "\n")
-		if end >= 0 {
-			cleaned = cleaned[3+end+1:]
-		}
-		if idx := strings.LastIndex(cleaned, "```"); idx >= 0 {
-			cleaned = cleaned[:idx]
-		}
-		cleaned = strings.TrimSpace(cleaned)
-	}
-	if err := json.Unmarshal([]byte(cleaned), &parsed); err != nil {
-		return TransferSuggestion{}, fmt.Errorf("parse transfer suggestion: %w (raw: %s)", err, result.RawResponse)
-	}
-
-	return TransferSuggestion{
-		AccountName: parsed.Account,
-		RawResponse: result.RawResponse,
-	}, nil
+// SuggestTransfer proposes the destination asset account for converting a
+// withdrawal into a transfer, asking Jev first when the cascade is enabled.
+func (p *Pipeline) SuggestTransfer(ctx context.Context, description string, accounts []classifier.AccountCandidate) (classifier.TransferSuggestion, error) {
+	return classifier.SuggestTransfer(ctx, p.classifier, description, accounts)
 }

@@ -361,6 +361,12 @@ type configResponse struct {
 	HistoryLookbackDays int `json:"history_lookback_days"`
 	WorkerConcurrency   int `json:"worker_concurrency"`
 	BatchConcurrency    int `json:"batch_concurrency"`
+
+	JevEnabled       bool    `json:"jev_enabled"`
+	OpenRouterKeySet bool    `json:"openrouter_key_set"`
+	JevModel         string  `json:"jev_model"`
+	JevHighThreshold float64 `json:"jev_high_threshold"`
+	JevLowThreshold  float64 `json:"jev_low_threshold"`
 }
 
 func (h *Handler) getConfig(w http.ResponseWriter, _ *http.Request) {
@@ -388,6 +394,12 @@ func (h *Handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 		HistoryLookbackDays: cfg.HistoryLookbackDays,
 		WorkerConcurrency:   cfg.WorkerConcurrency,
 		BatchConcurrency:    cfg.BatchConcurrency,
+
+		JevEnabled:       cfg.JevEnabled,
+		OpenRouterKeySet: cfg.OpenRouterKey != "",
+		JevModel:         cfg.JevModel,
+		JevHighThreshold: cfg.JevHighThreshold,
+		JevLowThreshold:  cfg.JevLowThreshold,
 	})
 }
 
@@ -416,6 +428,12 @@ type configUpdateRequest struct {
 	HistoryLookbackDays *int `json:"history_lookback_days"`
 	WorkerConcurrency   *int `json:"worker_concurrency"`
 	BatchConcurrency    *int `json:"batch_concurrency"`
+
+	JevEnabled       *bool    `json:"jev_enabled"`
+	OpenRouterKey    *string  `json:"openrouter_api_key"`
+	JevModel         *string  `json:"jev_model"`
+	JevHighThreshold *float64 `json:"jev_high_threshold"`
+	JevLowThreshold  *float64 `json:"jev_low_threshold"`
 }
 
 func (h *Handler) putConfig(w http.ResponseWriter, r *http.Request) {
@@ -428,6 +446,13 @@ func (h *Handler) putConfig(w http.ResponseWriter, r *http.Request) {
 	// Merge non-nil fields from the request into the existing stored config.
 	existing := h.store.Get()
 	updated := mergeConfigUpdate(existing, req)
+
+	effective := *h.baseCfg
+	config.ApplyStored(&effective, updated)
+	if err := effective.ValidateJevThresholds(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	if err := h.store.Save(updated); err != nil {
 		http.Error(w, fmt.Sprintf("failed to save config: %v", err), http.StatusInternalServerError)
@@ -730,7 +755,7 @@ func (h *Handler) categorizeTransaction(w http.ResponseWriter, r *http.Request) 
 type suggestTransferResponse struct {
 	AccountID   string `json:"account_id"`
 	AccountName string `json:"account_name"`
-	Source      string `json:"source"` // "history" or "llm"
+	Source      string `json:"source"` // "history", "jev" or "llm"
 }
 
 // suggestTransferDestination suggests a destination asset account for a
@@ -783,7 +808,7 @@ func (h *Handler) suggestTransferDestination(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Use a simple LLM prompt to pick the best destination account.
+	// Jev (when enabled) or the LLM picks the best destination account.
 	clAccts := make([]classifier.AccountCandidate, len(accts))
 	for i, a := range accts {
 		clAccts[i] = classifier.AccountCandidate{ID: a.ID, Name: a.Name}
@@ -796,19 +821,11 @@ func (h *Handler) suggestTransferDestination(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Validate the LLM's suggestion.
-	for _, a := range accts {
-		if strings.EqualFold(a.Name, result.AccountName) {
-			writeJSON(w, http.StatusOK, suggestTransferResponse{
-				AccountID:   a.ID,
-				AccountName: a.Name,
-				Source:      "llm",
-			})
-			return
-		}
-	}
-
-	writeJSON(w, http.StatusOK, suggestTransferResponse{})
+	writeJSON(w, http.StatusOK, suggestTransferResponse{
+		AccountID:   result.AccountID,
+		AccountName: result.AccountName,
+		Source:      result.Source,
+	})
 }
 
 type convertToTransferRequest struct {
@@ -1169,6 +1186,10 @@ func (h *Handler) reloadClients() error {
 		DeepseekKey:   cfg.DeepseekKey,
 		DeepseekModel: cfg.DeepseekModel,
 		CustomContext: cfg.CustomSystemContext,
+		JevEnabled:    cfg.JevEnabled,
+		OpenRouterKey: cfg.OpenRouterKey,
+		JevModel:      cfg.JevModel,
+		JevThresholds: classifier.Thresholds{High: cfg.JevHighThreshold, Low: cfg.JevLowThreshold},
 	})
 
 	if err != nil {
@@ -1191,7 +1212,7 @@ func (h *Handler) reloadClients() error {
 	h.pipe = pipe
 	h.mu.Unlock()
 
-	slog.Info("clients reloaded", "provider", cfg.AIProvider, "firefly", cfg.FireflyURL)
+	slog.Info("clients reloaded", "provider", cfg.AIProvider, "jev", cfg.JevEnabled, "firefly", cfg.FireflyURL)
 	return nil
 }
 
@@ -1274,6 +1295,21 @@ func mergeConfigUpdate(existing config.StoredConfig, req configUpdateRequest) co
 	}
 	if req.BatchConcurrency != nil && *req.BatchConcurrency > 0 {
 		existing.BatchConcurrency = *req.BatchConcurrency
+	}
+	if req.JevEnabled != nil {
+		existing.JevEnabled = req.JevEnabled
+	}
+	if req.OpenRouterKey != nil && *req.OpenRouterKey != "" {
+		existing.OpenRouterKey = *req.OpenRouterKey
+	}
+	if req.JevModel != nil {
+		existing.JevModel = *req.JevModel
+	}
+	if req.JevHighThreshold != nil {
+		existing.JevHighThreshold = req.JevHighThreshold
+	}
+	if req.JevLowThreshold != nil {
+		existing.JevLowThreshold = req.JevLowThreshold
 	}
 	return existing
 }

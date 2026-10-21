@@ -209,7 +209,9 @@ function buildJobRow(j) {
         + '<td class="text-muted hidden-xs">' + esc(trunc(j.description, 55)) + '</td>'
         + '<td class="text-right hidden-sm hidden-xs">' + amount + '</td>'
         + '<td>' + (j.category ? '<span class="label label-default">' + esc(j.category) + '</span>' : '<span class="text-muted">&mdash;</span>') + '</td>'
-        + '<td><span class="label ' + lbl.cls + '">' + lbl.txt + '</span></td>'
+        + '<td><span class="label ' + lbl.cls + '">' + lbl.txt + '</span>'
+        + (sourceLabel(j) ? ' <small class="text-muted" title="Decided by">' + sourceLabel(j) + '</small>' : '')
+        + '</td>'
         + '<td class="text-right hidden-xs text-muted" style="font-size:12px;white-space:nowrap">' + t + '</td>';
     return tr;
 }
@@ -261,6 +263,16 @@ function buildDetailInner(j) {
     }
     if (!html) html = '<span class="text-muted">No details available yet.</span>';
     return html;
+}
+
+function sourceLabel(j) {
+    switch (j.source) {
+        case 'history': return 'History';
+        case 'jev': return 'Jev';
+        case 'jev+llm': return 'Jev → LLM';
+        case 'llm': return 'LLM';
+    }
+    return '';
 }
 
 function jobLabel(j) {
@@ -1168,7 +1180,7 @@ async function autoSuggestTransfer(gi, desc) {
                 if (!s2.value) s2.value = s.account_id;
             });
             result.innerHTML = '<span class="text-success" style="font-size:11px"><i class="fa fa-check-circle"></i> '
-                + (s.source === 'history' ? 'History: ' : 'AI: ')
+                + (s.source === 'history' ? 'History: ' : s.source === 'jev' ? 'Jev: ' : 'AI: ')
                 + '<strong>' + esc(s.account_name) + '</strong></span>';
         } else {
             result.innerHTML = '<span class="text-muted" style="font-size:11px">Could not determine.</span>';
@@ -1734,6 +1746,12 @@ async function loadSettings() {
         $('#cfg-history-lookback-days').val(d.history_lookback_days || '');
         $('#cfg-worker-concurrency').val(d.worker_concurrency || '');
         $('#cfg-batch-concurrency').val(d.batch_concurrency || '');
+        $('#cfg-jev-enabled').prop('checked', !!d.jev_enabled);
+        $('#cfg-openrouter-key').val('');
+        $('#openrouter-key-hint').toggle(!!d.openrouter_key_set);
+        $('#cfg-jev-model').val(d.jev_model || '');
+        $('#cfg-jev-high').val(d.jev_high_threshold > 0 ? d.jev_high_threshold : '');
+        $('#cfg-jev-low').val(d.jev_low_threshold > 0 ? d.jev_low_threshold : '');
         onProviderChange();
         $('#settings-badge').toggle(!d.configured);
         if (!d.configured) {
@@ -1836,6 +1854,15 @@ async function saveSettings() {
     if (!isNaN(wc) && wc > 0) payload.worker_concurrency = wc;
     var bc = parseInt($('#cfg-batch-concurrency').val(), 10);
     if (!isNaN(bc) && bc > 0) payload.batch_concurrency = bc;
+    payload.jev_enabled = $('#cfg-jev-enabled').prop('checked');
+    var ork = $('#cfg-openrouter-key').val();
+    if (ork) payload.openrouter_api_key = ork;
+    var jm = $('#cfg-jev-model').val().trim();
+    if (jm) payload.jev_model = jm;
+    var jh = parseFloat($('#cfg-jev-high').val());
+    if (!isNaN(jh)) payload.jev_high_threshold = jh;
+    var jl = parseFloat($('#cfg-jev-low').val());
+    if (!isNaN(jl)) payload.jev_low_threshold = jl;
     $('#save-status').text('Saving…');
     try {
         var res = await fetch('/api/config', {

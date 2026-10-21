@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"time"
@@ -36,6 +37,13 @@ type Config struct {
 	ReviewCacheTTL     time.Duration
 	ReviewLookbackDays int
 
+	// Jev pre-classifier (OpenRouter Decisions API).
+	JevEnabled       bool
+	OpenRouterKey    string
+	JevModel         string
+	JevHighThreshold float64
+	JevLowThreshold  float64
+
 	DestinationMatchEnabled bool
 
 	SearchEngine string // "google", "duckduckgo", or "" (disabled)
@@ -68,6 +76,11 @@ func Load() (*Config, *Store, error) {
 		DestinationMatchEnabled: getEnv("DESTINATION_MATCH_ENABLED", "false") == "true",
 		WorkerConcurrency:       getEnvInt("WORKER_CONCURRENCY", 1),
 		BatchConcurrency:        getEnvInt("BATCH_CONCURRENCY", 5),
+		JevEnabled:              getEnv("JEV_ENABLED", "false") == "true",
+		OpenRouterKey:           getEnv("OPENROUTER_API_KEY", ""),
+		JevModel:                getEnv("JEV_MODEL", "typesafe/jev-1.13"),
+		JevHighThreshold:        getEnvFloat("JEV_HIGH_THRESHOLD", 0.85),
+		JevLowThreshold:         getEnvFloat("JEV_LOW_THRESHOLD", 0.50),
 	}
 
 	ttlStr := getEnv("HISTORY_CACHE_TTL", "10m")
@@ -92,6 +105,11 @@ func Load() (*Config, *Store, error) {
 	}
 
 	ApplyStored(cfg, store.Get())
+
+	if err := cfg.ValidateJevThresholds(); err != nil {
+		slog.Warn("invalid Jev thresholds, using defaults", "error", err)
+		cfg.JevHighThreshold, cfg.JevLowThreshold = 0.85, 0.50
+	}
 
 	return cfg, store, nil
 }
@@ -155,6 +173,21 @@ func ApplyStored(cfg *Config, sc StoredConfig) {
 	if sc.SearchEngine != "" {
 		cfg.SearchEngine = sc.SearchEngine
 	}
+	if sc.JevEnabled != nil {
+		cfg.JevEnabled = *sc.JevEnabled
+	}
+	if sc.OpenRouterKey != "" {
+		cfg.OpenRouterKey = sc.OpenRouterKey
+	}
+	if sc.JevModel != "" {
+		cfg.JevModel = sc.JevModel
+	}
+	if sc.JevHighThreshold != nil {
+		cfg.JevHighThreshold = *sc.JevHighThreshold
+	}
+	if sc.JevLowThreshold != nil {
+		cfg.JevLowThreshold = *sc.JevLowThreshold
+	}
 }
 
 // IsConfigured returns true if all fields required to run the pipeline are present.
@@ -179,6 +212,15 @@ func (c *Config) IsConfigured() bool {
 	return false
 }
 
+// ValidateJevThresholds requires 0 <= low <= high <= 1.
+func (c *Config) ValidateJevThresholds() error {
+	// Written as a positive range check so NaN (which fails every comparison) is rejected.
+	if !(0 <= c.JevLowThreshold && c.JevLowThreshold <= c.JevHighThreshold && c.JevHighThreshold <= 1) {
+		return fmt.Errorf("jev thresholds must satisfy 0 <= low (%.2f) <= high (%.2f) <= 1", c.JevLowThreshold, c.JevHighThreshold)
+	}
+	return nil
+}
+
 func getEnv(key, def string) string {
 	if v, ok := os.LookupEnv(key); ok {
 		return v
@@ -192,6 +234,18 @@ func getEnvInt(key string, def int) int {
 		return def
 	}
 	v, err := strconv.Atoi(s)
+	if err != nil {
+		return def
+	}
+	return v
+}
+
+func getEnvFloat(key string, def float64) float64 {
+	s := getEnv(key, "")
+	if s == "" {
+		return def
+	}
+	v, err := strconv.ParseFloat(s, 64)
 	if err != nil {
 		return def
 	}

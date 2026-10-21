@@ -17,6 +17,7 @@ The original project is [bahuma20/firefly-iii-ai-categorize](https://github.com/
 
 - **Web UI.** A built-in dashboard, styled to match Firefly III's AdminLTE theme with light and dark mode support, provides real-time job monitoring, a transactions browser with manual re-categorisation, a category viewer, a review page for AI decisions, and a full settings page.
 - **Multiple AI providers.** Supports OpenAI (and any OpenAI-compatible endpoint such as Ollama or Azure OpenAI), Google Gemini, and DeepSeek — switchable from the settings page.
+- **Jev pre-classifier (optional).** [TypeSafe's Jev decision model](https://openrouter.ai/docs/guides/community/jev) via OpenRouter picks the category, payee account, and transfer destination first, with calibrated probabilities. Only uncertain cases are sent to the AI provider, cutting LLM calls and cost.
 - **Batch categorisation.** All uncategorised withdrawals can be classified in one operation from the UI or the command line.
 - **Three-outcome classification model.** Carried forward from the [openaccountants fork](https://github.com/openaccountants/firefly-iii-ai-categorize). The AI discloses its confidence level (`CLASSIFIED`, `ASSUMED`, `NEEDS_REVIEW`) rather than silently guessing or doing nothing.
 - **Transaction history context.** Past categorised transactions are sent to the model as few-shot examples, improving accuracy for recurring merchants. Repeated transactions from the same vendor are categorised automatically, skipping the AI calls entirely.
@@ -147,6 +148,9 @@ POST /webhook  (Firefly III sends new transaction)
   (Optional) Fetch expense accounts (destination matching)
         │
         ▼
+  (Optional) Jev pre-classifier (3-band: High→CLASSIFIED, Low→NEEDS_REVIEW, middle→LLM)
+        │
+        ▼
   Send to LLM with three-outcome prompt
         │
         ├── CLASSIFIED    → set category + tag "ai:classified"
@@ -218,6 +222,18 @@ All variables are optional. When they are absent, the server starts normally and
 | `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model name |
 | `DEEPSEEK_API_KEY` | — | DeepSeek API key |
 | `DEEPSEEK_MODEL` | `deepseek-chat` | DeepSeek model name |
+
+### Jev pre-classifier (optional)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `JEV_ENABLED` | `false` | Ask Jev (via OpenRouter) before the AI provider |
+| `OPENROUTER_API_KEY` | — | OpenRouter API key (used only for Jev) |
+| `JEV_MODEL` | `typesafe/jev-1.13` | Jev model ID |
+| `JEV_HIGH_THRESHOLD` | `0.85` | Probability at or above this → apply directly (CLASSIFIED) |
+| `JEV_LOW_THRESHOLD` | `0.50` | Probability below this → NEEDS_REVIEW; between both → AI provider |
+
+Jev ([TypeSafe Decision Model](https://openrouter.ai/docs/guides/community/jev), via [OpenRouter](https://openrouter.ai/keys)) pre-classifies category, payee account, and transfer destination with calibrated probabilities. Only uncertain cases reach the AI provider, cutting LLM calls and cost.
 
 ### Server
 
