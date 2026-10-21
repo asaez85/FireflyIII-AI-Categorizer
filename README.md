@@ -91,6 +91,38 @@ Click **Save settings** when done.
 
 ---
 
+### 3b. (Optional) Enable the Jev pre-classifier
+
+[Jev](https://openrouter.ai/docs/guides/community/jev) is TypeSafe's decision model, served by [OpenRouter](https://openrouter.ai). It picks the category, payee account, and transfer destination from a list and returns a calibrated probability. When enabled, Jev answers first and only uncertain cases reach your AI provider, cutting LLM calls and cost. It is off by default and fully backward compatible — without it, behaviour is unchanged.
+
+**1. Get an OpenRouter API key.** Create an account at [openrouter.ai](https://openrouter.ai), go to [Keys](https://openrouter.ai/keys) and create a key. Jev calls are billed to your OpenRouter credit balance, so add credit before enabling it.
+
+**2. Enable it.** In **Settings → AI Provider → Jev pre-classifier (OpenRouter)**: tick **Use Jev before the AI provider**, paste the key, and save. Your regular AI provider (step 3) must stay configured — it handles the uncertain cases and acts as the automatic fallback.
+
+**3. Tune the thresholds** (or keep the defaults):
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `JEV_HIGH_THRESHOLD` | `0.85` | Probability at or above this → category applied directly (CLASSIFIED), no LLM call |
+| `JEV_LOW_THRESHOLD` | `0.50` | Probability below this → NEEDS_REVIEW; between both thresholds → sent to the AI provider |
+
+Lowering `JEV_HIGH_THRESHOLD` lets Jev decide more cases itself (fewer LLM calls, less nuance); raising `JEV_LOW_THRESHOLD` sends more borderline cases to review instead of the LLM. Both must satisfy `0 ≤ LOW ≤ HIGH ≤ 1` or the defaults are used.
+
+The same settings are available as environment variables (`JEV_ENABLED`, `OPENROUTER_API_KEY`, `JEV_MODEL`, `JEV_HIGH_THRESHOLD`, `JEV_LOW_THRESHOLD` — see the table below) or in the compose file:
+
+```yaml
+    environment:
+      - JEV_ENABLED=true
+      - OPENROUTER_API_KEY=sk-or-...
+      # - JEV_MODEL=typesafe/jev-1.13
+      # - JEV_HIGH_THRESHOLD=0.85
+      # - JEV_LOW_THRESHOLD=0.50
+```
+
+Requests go to OpenRouter's Decisions API endpoint `https://openrouter.ai/api/alpha/decisions` (fixed, not configurable). If a Jev call fails — network error, outage, or no credit — the AI provider takes over for that transaction and Jev is skipped for 60 seconds, so an outage never blocks categorisation. The Jobs table shows which stage decided each result (`History`, `Jev`, `Jev → LLM` or `LLM`), and the expanded row shows the exact request sent to Jev and its answer.
+
+---
+
 ### 4. Set up the Firefly III webhook
 
 In Firefly III, go to **Automation → Webhooks** and click **Create new webhook**.
@@ -142,14 +174,20 @@ POST /webhook  (Firefly III sends new transaction)
   Fetch history: recent categorised transactions (few-shot examples)
         │
         ▼
+  History match? ──yes──► CLASSIFIED (skip everything else)
+        │ no
+        ▼
   Fetch categories from Firefly III
         │
         ▼
   (Optional) Fetch expense accounts (destination matching)
         │
         ▼
-  (Optional) Jev pre-classifier (3-band: High→CLASSIFIED, Low→NEEDS_REVIEW, middle→LLM)
-        │
+  (Optional, JEV_ENABLED) Jev pre-classifier via OpenRouter Decisions API
+        │   probability >= JEV_HIGH_THRESHOLD (0.85) ──► CLASSIFIED, no LLM call
+        │   probability <  JEV_LOW_THRESHOLD  (0.50) ──► NEEDS_REVIEW
+        │   between the two thresholds ──────────────► continue to LLM
+        │   (on any error: fall through to LLM, skip Jev for 60 s)
         ▼
   Send to LLM with three-outcome prompt
         │
@@ -233,7 +271,7 @@ All variables are optional. When they are absent, the server starts normally and
 | `JEV_HIGH_THRESHOLD` | `0.85` | Probability at or above this → apply directly (CLASSIFIED) |
 | `JEV_LOW_THRESHOLD` | `0.50` | Probability below this → NEEDS_REVIEW; between both → AI provider |
 
-Jev ([TypeSafe Decision Model](https://openrouter.ai/docs/guides/community/jev), via [OpenRouter](https://openrouter.ai/keys)) pre-classifies category, payee account, and transfer destination with calibrated probabilities. Only uncertain cases reach the AI provider, cutting LLM calls and cost.
+Jev ([TypeSafe Decision Model](https://openrouter.ai/docs/guides/community/jev), via [OpenRouter](https://openrouter.ai/keys)) pre-classifies category, payee account, and transfer destination with calibrated probabilities. Only uncertain cases reach the AI provider, cutting LLM calls and cost. See [Enable the Jev pre-classifier](#3b-optional-enable-the-jev-pre-classifier) for setup and threshold tuning.
 
 ### Server
 
