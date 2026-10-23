@@ -857,7 +857,7 @@ function hideReviewProcessingBar() {
 
 function resolveGroupLabel(g) {
     var dest = (g.destination_name || '').trim();
-    var noName = !dest || dest.toLowerCase() === '(no name)';
+    var noName = !dest || dest.toLowerCase() === '(no name)' || dest.toLowerCase() === '(unknown destination)';
     var label = noName ? (g.description || '(unknown)') : dest;
     var sub = (!noName && g.description && g.description !== dest) ? g.description : '';
     return {label: label, sub: sub};
@@ -870,7 +870,7 @@ function buildSearchIcon(g) {
     if (!engine) return '';
     var dest = (g.destination_name || '').trim();
     var desc = (g.description || '').trim();
-    var noName = !dest || dest.toLowerCase() === '(no name)';
+    var noName = !dest || dest.toLowerCase() === '(no name)' || dest.toLowerCase() === '(unknown destination)';
     // Prefer destination name for searching; fall back to description.
     var term = noName ? desc : (dest + (desc && desc !== dest ? ' ' + desc : ''));
     if (!term) return '';

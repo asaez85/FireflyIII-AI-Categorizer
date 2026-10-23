@@ -1059,7 +1059,7 @@ func matchesTxnFilter(row firefly.TransactionRow, missingCategory, missingDestin
 	}
 	if missingDestination {
 		dn := strings.TrimSpace(row.DestinationName)
-		if dn != "" && !strings.EqualFold(dn, "(no name)") {
+		if dn != "" && !strings.EqualFold(dn, "(no name)") && !strings.EqualFold(dn, "(unknown destination)") {
 			return false
 		}
 	}

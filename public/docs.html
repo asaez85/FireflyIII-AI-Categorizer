@@ -309,8 +309,11 @@
                     <p style="margin-top:8px">
                         In <strong>Settings → Behaviour</strong>, check <strong>Set destination account automatically</strong>.
                         When enabled, the AI will also attempt to match or create an expense account (payee) for each
-                        withdrawal processed via webhook. On the Transactions page you can always choose whether to
-                        classify categories, set destinations, or both — regardless of this setting.
+                        withdrawal processed via webhook. If the incoming transaction has the generic placeholder
+                        <code>(unknown destination)</code>, it is cleared at the start of the job so Jev or the AI
+                        can determine the correct payee from the description and history. On the Transactions page you
+                        can always choose whether to classify categories, set destinations, or both — regardless of this
+                        setting.
                     </p>
                 </div>
 
@@ -451,6 +454,11 @@
                         CLASSIFIED.
                     </li>
                 </ul>
+                <p>
+                    If a transaction arrives with the generic placeholder <code>(unknown destination)</code>, the
+                    categorizer clears that value at the start of the job so Jev or the AI can infer the real payee from
+                    the description and history.
+                </p>
                 <p>
                     On the <strong>Review</strong> page, each review card includes a searchable destination account
                     field. Typing a name that does not match any existing account shows a <strong>NEW</strong> badge,

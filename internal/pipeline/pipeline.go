@@ -94,6 +94,15 @@ func (p *Pipeline) Run(ctx context.Context, j *job.Job, txn firefly.Transaction)
 // txn must contain every split in the group (see firefly.Client.UpdateTransaction).
 func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, txn firefly.Transaction, opts RunOptions) error {
 	p.registry.SetInProgress(j.ID)
+	if opts.MatchDestination && classifier.IsUnknownDestination(j.DestinationName) {
+		p.registry.ClearDestinationName(j.ID)
+		j.DestinationName = ""
+		for i := range txn.Splits {
+			if classifier.IsUnknownDestination(txn.Splits[i].DestinationName) {
+				txn.Splits[i].DestinationName = ""
+			}
+		}
+	}
 	transactionID := txn.ID
 
 	categories, err := p.getCategories(ctx)
@@ -213,14 +222,14 @@ func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, txn firefly.T
 	}
 
 	result, err := p.classifier.Classify(ctx, classifier.Request{
-		Categories:           clCats,
-		DestinationName:      j.DestinationName,
-		Description:          j.Description,
-		Amount:               j.Amount,
-		History:              promptHistory,
-		ExpenseAccounts:      clAccounts,
-		DestinationMatching:  opts.MatchDestination,
-		CategoryOnly:         opts.ClassifyCategory && !opts.MatchDestination,
+		Categories:          clCats,
+		DestinationName:     j.DestinationName,
+		Description:         j.Description,
+		Amount:              j.Amount,
+		History:             promptHistory,
+		ExpenseAccounts:     clAccounts,
+		DestinationMatching: opts.MatchDestination,
+		CategoryOnly:        opts.ClassifyCategory && !opts.MatchDestination,
 		// The category is either not wanted or already fixed by history; the
 		// classifier is only consulted for the destination.
 		DestinationOnly: opts.MatchDestination && (!opts.ClassifyCategory || historyMatchCat != ""),

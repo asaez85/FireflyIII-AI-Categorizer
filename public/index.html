@@ -718,6 +718,10 @@
                                                 <p class="help-block" style="margin-top:2px">
                                                     When enabled, webhook-triggered classifications will also attempt to
                                                     match or create an expense account (payee) for each withdrawal.
+                                                    If a transaction arrives with the generic placeholder
+                                                    <code>(unknown destination)</code>, it is cleared at the start of the
+                                                    job so Jev or the AI can infer the real payee from the description
+                                                    and history.
                                                     On the Transactions page you can always choose whether to classify
                                                     categories, set destinations, or both — regardless of this setting.
                                                 </p>

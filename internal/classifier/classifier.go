@@ -43,7 +43,18 @@ func GroupKey(destinationName, description string) string {
 
 func isBlankName(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "", "no name", "(no name)", "unknown", "n/a":
+	case "", "no name", "(no name)", "unknown", "n/a", "(unknown destination)", "unknown destination":
+		return true
+	}
+	return false
+}
+
+// IsUnknownDestination reports whether s is the generic Firefly III placeholder
+// used when a withdrawal has no known payee. When destination matching is enabled,
+// these placeholders are treated as blank so the AI/Jev can infer the real payee.
+func IsUnknownDestination(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "(unknown destination)", "unknown destination":
 		return true
 	}
 	return false

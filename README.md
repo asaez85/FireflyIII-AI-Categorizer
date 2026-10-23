@@ -311,6 +311,8 @@ When you enable **Set destination account automatically** in Settings → Behavi
 - **MATCH** — the AI finds an existing expense account that corresponds to the merchant.
 - **CREATE** — the AI is confident a new account is needed and creates it in Firefly III automatically.
 
+If a transaction arrives with the generic placeholder `(unknown destination)`, the categorizer clears that value at the start of the job so Jev or the AI can infer the real payee from the description and history.
+
 This requires an extra API call to fetch your expense accounts, modestly increasing latency and AI token usage. When disabled, the AI only determines the category and the expense account is left untouched.
 
 On the **Review** page, when enabled, each group card gains a searchable Destination Account field so you can correct or set the payee manually during review. Typing a name that doesn't match any existing account shows a **NEW** badge, indicating a new expense account will be created when you apply.

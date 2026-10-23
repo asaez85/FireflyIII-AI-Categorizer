@@ -49,6 +49,10 @@ func (r *Registry) SetInProgress(id string) {
 	r.update(id, func(j *Job) { j.Status = StatusInProgress })
 }
 
+func (r *Registry) ClearDestinationName(id string) {
+	r.update(id, func(j *Job) { j.DestinationName = "" })
+}
+
 func (r *Registry) SetFinished(id, outcome, category, reason, assumption, rawPrompt, rawResponse, destAccount, destAction, source string) {
 	r.update(id, func(j *Job) {
 		j.Status = StatusFinished

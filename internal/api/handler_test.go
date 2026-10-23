@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/openaccountants/firefly-iii-ai-categorize/internal/config"
+	"github.com/openaccountants/firefly-iii-ai-categorize/internal/firefly"
 )
 
 func TestMergeConfigUpdateJev(t *testing.T) {
@@ -58,5 +59,29 @@ func TestMergeConfigUpdateEmptyJevModelResets(t *testing.T) {
 	got := mergeConfigUpdate(config.StoredConfig{JevModel: "typesafe/jev-2"}, configUpdateRequest{JevModel: &empty})
 	if got.JevModel != "" {
 		t.Errorf("JevModel = %q, want cleared so the env/default model applies", got.JevModel)
+	}
+}
+
+func TestMatchesTxnFilterUnknownDestination(t *testing.T) {
+	rows := []firefly.TransactionRow{
+		{ID: "1", DestinationName: ""},
+		{ID: "2", DestinationName: "(no name)"},
+		{ID: "3", DestinationName: "(unknown destination)"},
+		{ID: "4", DestinationName: "Amazon"},
+	}
+	want := []string{"1", "2", "3"}
+	var got []string
+	for _, r := range rows {
+		if matchesTxnFilter(r, false, true, "", "") {
+			got = append(got, r.ID)
+		}
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("got %v, want %v", got, want)
+		}
 	}
 }
