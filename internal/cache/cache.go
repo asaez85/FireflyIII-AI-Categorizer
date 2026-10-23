@@ -101,14 +101,20 @@ func (c *Cache) ensureFresh(ctx context.Context) error {
 				continue
 			}
 			amount, _ := strconv.ParseFloat(s.Amount, 64)
+			destName := s.DestinationName
+			destID := s.DestinationID
+			if classifier.IsUnknownDestination(destName) {
+				destName = ""
+				destID = ""
+			}
 			entries = append(entries, classifier.HistoricalEntry{
 				TransactionID:        txn.ID,
-				DestinationName:      s.DestinationName,
+				DestinationName:      destName,
 				Description:          s.Description,
 				CategoryName:         s.CategoryName,
-				GroupKey:             classifier.GroupKey(s.DestinationName, s.Description),
+				GroupKey:             classifier.GroupKey(destName, s.Description),
 				Amount:               amount,
-				DestinationAccountID: s.DestinationID,
+				DestinationAccountID: destID,
 			})
 		}
 	}

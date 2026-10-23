@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -238,4 +239,313 @@ func TestRunWithOptionsClearsCaseInsensitiveUnknownDestination(t *testing.T) {
 	if txn.Splits[0].DestinationName != "" {
 		t.Errorf("split DestinationName = %q, want empty", txn.Splits[0].DestinationName)
 	}
+}
+
+// assertingClassifier checks the request it receives and records whether it was called.
+type assertingClassifier struct {
+	t                   *testing.T
+	wantDestinationName string
+	wantDestinationOnly bool
+	called              bool
+	result              classifier.Result
+}
+
+func (ac *assertingClassifier) Classify(ctx context.Context, req classifier.Request) (classifier.Result, error) {
+	ac.called = true
+	if req.DestinationName != ac.wantDestinationName {
+		ac.t.Errorf("Classify DestinationName = %q, want %q", req.DestinationName, ac.wantDestinationName)
+	}
+	if req.DestinationOnly != ac.wantDestinationOnly {
+		ac.t.Errorf("Classify DestinationOnly = %v, want %v", req.DestinationOnly, ac.wantDestinationOnly)
+	}
+	return ac.result, nil
+}
+
+// encodeTransactions returns the JSON shape expected by the Firefly III
+// transactions list endpoint.
+func encodeTransactions(txns []firefly.Transaction) []map[string]interface{} {
+	data := make([]map[string]interface{}, len(txns))
+	for i, txn := range txns {
+		splits := make([]map[string]interface{}, len(txn.Splits))
+		for j, s := range txn.Splits {
+			splits[j] = map[string]interface{}{
+				"transaction_journal_id": s.JournalID,
+				"type":                   s.Type,
+				"description":            s.Description,
+				"destination_name":       s.DestinationName,
+				"destination_id":         s.DestinationID,
+				"amount":                 s.Amount,
+				"category_name":          s.CategoryName,
+				"category_id":            s.CategoryID,
+			}
+		}
+		data[i] = map[string]interface{}{
+			"id": txn.ID,
+			"attributes": map[string]interface{}{
+				"group_title":  txn.GroupTitle,
+				"transactions": splits,
+			},
+		}
+	}
+	return data
+}
+
+// newMockFireflyServer returns a server configured with the given accounts,
+// categories and past transactions, and records the body of any transaction PUT
+// in lastBody.
+func newMockFireflyServer(t *testing.T, categories []firefly.Category, accounts []firefly.Account, txns []firefly.Transaction, lastBody *[]byte) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v1/categories":
+			catData := make([]map[string]interface{}, len(categories))
+			for i, c := range categories {
+				catData[i] = map[string]interface{}{"id": c.ID, "attributes": map[string]interface{}{"name": c.Name}}
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": catData,
+				"meta": map[string]interface{}{"pagination": map[string]interface{}{"total_pages": 1, "total": len(categories)}},
+			})
+		case strings.HasPrefix(r.URL.Path, "/api/v1/accounts"):
+			acctData := make([]map[string]interface{}, len(accounts))
+			for i, a := range accounts {
+				acctData[i] = map[string]interface{}{"id": a.ID, "attributes": map[string]interface{}{"name": a.Name}}
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": acctData,
+				"meta": map[string]interface{}{"pagination": map[string]interface{}{"total_pages": 1, "total": len(accounts)}},
+			})
+		case r.URL.Path == "/api/v1/transactions":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": encodeTransactions(txns),
+				"meta": map[string]interface{}{"pagination": map[string]interface{}{"total_pages": 1, "total": len(txns)}},
+			})
+		case strings.HasPrefix(r.URL.Path, "/api/v1/transactions/") && r.Method == http.MethodPut:
+			body, _ := io.ReadAll(r.Body)
+			*lastBody = body
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+}
+
+func TestTryDestinationHistoryMatchIgnoresUnknown(t *testing.T) {
+	hist := []classifier.HistoricalEntry{
+		{DestinationAccountID: "29", DestinationName: "unknown", Amount: 10},
+		{DestinationAccountID: "29", DestinationName: "Unknown", Amount: 10},
+		{DestinationAccountID: "29", DestinationName: "", Amount: 10},
+		{DestinationAccountID: "7", DestinationName: "Shell", Amount: 10},
+		{DestinationAccountID: "7", DestinationName: "Shell", Amount: 10},
+	}
+
+	id, count := tryDestinationHistoryMatch(hist, floatPtr(10))
+	if id != "7" || count != 2 {
+		t.Errorf("mixed history: got id=%q count=%d, want id=7 count=2", id, count)
+	}
+
+	// Entries with unknown destination names or empty IDs must never accumulate votes.
+	unknownOnly := []classifier.HistoricalEntry{
+		{DestinationAccountID: "29", DestinationName: "unknown", Amount: 10},
+		{DestinationAccountID: "29", DestinationName: "Unknown", Amount: 10},
+		{DestinationAccountID: "29", DestinationName: "(unknown destination)", Amount: 10},
+	}
+	id, count = tryDestinationHistoryMatch(unknownOnly, floatPtr(10))
+	if id != "" || count != 0 {
+		t.Errorf("unknown-only history: got id=%q count=%d, want empty", id, count)
+	}
+}
+
+func TestRunWithOptionsIgnoresUnknownDestinationHistory(t *testing.T) {
+	var lastBody []byte
+	categories := []firefly.Category{{ID: "cat-1", Name: "Supermercado"}}
+	accounts := []firefly.Account{
+		{ID: "29", Name: "unknown"},
+		{ID: "acc-real", Name: "Real Store"},
+	}
+
+	desc := "Weekly shopping"
+	histTxns := []firefly.Transaction{
+		{ID: "old-1", Splits: []firefly.Split{{
+			JournalID: "j-old-1", Type: "withdrawal", Description: desc,
+			DestinationName: "unknown", DestinationID: "29", Amount: "42.50",
+			CategoryName: "Supermercado", CategoryID: "cat-1",
+		}}},
+		{ID: "old-2", Splits: []firefly.Split{{
+			JournalID: "j-old-2", Type: "withdrawal", Description: desc,
+			DestinationName: "unknown", DestinationID: "29", Amount: "42.50",
+			CategoryName: "Supermercado", CategoryID: "cat-1",
+		}}},
+		{ID: "old-3", Splits: []firefly.Split{{
+			JournalID: "j-old-3", Type: "withdrawal", Description: desc,
+			DestinationName: "unknown", DestinationID: "29", Amount: "42.50",
+			CategoryName: "Supermercado", CategoryID: "cat-1",
+		}}},
+	}
+
+	server := newMockFireflyServer(t, categories, accounts, histTxns, &lastBody)
+	defer server.Close()
+
+	fc := firefly.New(server.URL, "token", "ai")
+	reg := job.NewRegistry()
+	ca := cache.New(fc, 0, 1)
+
+	amount := 42.50
+	j := reg.Create("txn-new", "", "unknown", desc, &amount)
+	txn := firefly.Transaction{
+		ID: "txn-new",
+		Splits: []firefly.Split{{
+			JournalID:       "j-new",
+			Description:     desc,
+			DestinationName: "unknown",
+			Amount:          "42.50",
+		}},
+	}
+
+	cl := &assertingClassifier{
+		t:                   t,
+		wantDestinationName: "",
+		wantDestinationOnly: true,
+		result: classifier.Result{
+			Outcome:  classifier.Classified,
+			Category: "Ignored",
+			Destination: &classifier.DestinationResult{
+				Name:       "Real Store",
+				Action:     "MATCH",
+				ID:         "acc-real",
+				Confidence: "CLASSIFIED",
+			},
+		},
+	}
+	pipe := New(fc, cl, ca, reg, 1, true)
+
+	if err := pipe.RunWithOptions(context.Background(), j, txn, RunOptions{ClassifyCategory: true, MatchDestination: true}); err != nil {
+		t.Fatalf("RunWithOptions: %v", err)
+	}
+
+	if !cl.called {
+		t.Fatalf("classifier was not called; transaction should not have been auto-matched")
+	}
+
+	if j.DestinationName != "" {
+		t.Errorf("job DestinationName = %q, want empty", j.DestinationName)
+	}
+
+	stored, _ := reg.Get(j.ID)
+	if stored.DestinationName != "" {
+		t.Errorf("registry DestinationName = %q, want empty", stored.DestinationName)
+	}
+	if stored.DestinationAccount != "Real Store" {
+		t.Errorf("registry DestinationAccount = %q, want Real Store", stored.DestinationAccount)
+	}
+	if stored.DestinationAction != "MATCH" {
+		t.Errorf("registry DestinationAction = %q, want MATCH", stored.DestinationAction)
+	}
+
+	var body struct {
+		Transactions []struct {
+			CategoryID    string `json:"category_id"`
+			DestinationID string `json:"destination_id"`
+		} `json:"transactions"`
+	}
+	if err := json.Unmarshal(lastBody, &body); err != nil {
+		t.Fatalf("unmarshal update body: %v", err)
+	}
+	if len(body.Transactions) != 1 {
+		t.Fatalf("got %d transactions in update body, want 1", len(body.Transactions))
+	}
+	if body.Transactions[0].CategoryID != "cat-1" {
+		t.Errorf("CategoryID = %q, want cat-1", body.Transactions[0].CategoryID)
+	}
+	if body.Transactions[0].DestinationID != "acc-real" {
+		t.Errorf("DestinationID = %q, want acc-real", body.Transactions[0].DestinationID)
+	}
+}
+
+func TestRunWithOptionsRejectsAccountNamedUnknown(t *testing.T) {
+	var lastBody []byte
+	categories := []firefly.Category{{ID: "cat-1", Name: "Supermercado"}}
+	accounts := []firefly.Account{
+		{ID: "29", Name: "unknown"},
+		{ID: "acc-real", Name: "Real Store"},
+	}
+
+	desc := "Weekly shopping"
+	histTxns := []firefly.Transaction{
+		{ID: "old-1", Splits: []firefly.Split{{
+			JournalID: "j-old-1", Type: "withdrawal", Description: desc,
+			DestinationName: "Old Payee", DestinationID: "29", Amount: "42.50",
+			CategoryName: "Supermercado", CategoryID: "cat-1",
+		}}},
+		{ID: "old-2", Splits: []firefly.Split{{
+			JournalID: "j-old-2", Type: "withdrawal", Description: desc,
+			DestinationName: "Old Payee", DestinationID: "29", Amount: "42.50",
+			CategoryName: "Supermercado", CategoryID: "cat-1",
+		}}},
+		{ID: "old-3", Splits: []firefly.Split{{
+			JournalID: "j-old-3", Type: "withdrawal", Description: desc,
+			DestinationName: "Old Payee", DestinationID: "29", Amount: "42.50",
+			CategoryName: "Supermercado", CategoryID: "cat-1",
+		}}},
+	}
+
+	server := newMockFireflyServer(t, categories, accounts, histTxns, &lastBody)
+	defer server.Close()
+
+	fc := firefly.New(server.URL, "token", "ai")
+	reg := job.NewRegistry()
+	ca := cache.New(fc, 0, 1)
+
+	amount := 42.50
+	j := reg.Create("txn-new", "", "Old Payee", desc, &amount)
+	txn := firefly.Transaction{
+		ID: "txn-new",
+		Splits: []firefly.Split{{
+			JournalID:       "j-new",
+			Description:     desc,
+			DestinationName: "Old Payee",
+			Amount:          "42.50",
+		}},
+	}
+
+	cl := &assertingClassifier{
+		t:                   t,
+		wantDestinationName: "Old Payee",
+		wantDestinationOnly: true,
+		result: classifier.Result{
+			Outcome:  classifier.Classified,
+			Category: "Ignored",
+			Destination: &classifier.DestinationResult{
+				Name:       "Real Store",
+				Action:     "MATCH",
+				ID:         "acc-real",
+				Confidence: "CLASSIFIED",
+			},
+		},
+	}
+	pipe := New(fc, cl, ca, reg, 1, true)
+
+	if err := pipe.RunWithOptions(context.Background(), j, txn, RunOptions{ClassifyCategory: true, MatchDestination: true}); err != nil {
+		t.Fatalf("RunWithOptions: %v", err)
+	}
+
+	if !cl.called {
+		t.Fatalf("classifier was not called; unknown-named account must not be used for history match")
+	}
+
+	var body struct {
+		Transactions []struct {
+			DestinationID string `json:"destination_id"`
+		} `json:"transactions"`
+	}
+	if err := json.Unmarshal(lastBody, &body); err != nil {
+		t.Fatalf("unmarshal update body: %v", err)
+	}
+	if body.Transactions[0].DestinationID != "acc-real" {
+		t.Errorf("DestinationID = %q, want acc-real", body.Transactions[0].DestinationID)
+	}
+}
+
+func floatPtr(v float64) *float64 {
+	return &v
 }

@@ -149,7 +149,7 @@ func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, txn firefly.T
 	if historyMatchDestID != "" {
 		found := false
 		for _, a := range expenseAccounts {
-			if a.ID == historyMatchDestID {
+			if a.ID == historyMatchDestID && !classifier.IsUnknownDestination(a.Name) {
 				found = true
 				break
 			}
@@ -316,11 +316,11 @@ func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, txn firefly.T
 	// Override destination with history match when the LLM didn't produce one
 	// (or produced a weaker one) but history has a confident match.
 	if historyMatchDestID != "" && outcome.DestinationID == "" {
-		outcome.DestinationID = historyMatchDestID
-		outcome.DestConfidence = "CLASSIFIED"
-		destAction = "MATCH"
 		for _, a := range expenseAccounts {
-			if a.ID == historyMatchDestID {
+			if a.ID == historyMatchDestID && !classifier.IsUnknownDestination(a.Name) {
+				outcome.DestinationID = historyMatchDestID
+				outcome.DestConfidence = "CLASSIFIED"
+				destAction = "MATCH"
 				destAccount = a.Name
 				break
 			}
@@ -433,7 +433,7 @@ func tryHistoryMatch(history []classifier.HistoricalEntry, amount *float64) (cat
 func tryDestinationHistoryMatch(history []classifier.HistoricalEntry, amount *float64) (accountID string, count int) {
 	votes := make(map[string]int)
 	for _, h := range history {
-		if h.DestinationAccountID == "" {
+		if h.DestinationAccountID == "" || classifier.IsUnknownDestination(h.DestinationName) {
 			continue
 		}
 		if amount != nil && *amount > 0 && h.Amount > 0 {
