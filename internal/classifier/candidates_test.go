@@ -60,12 +60,26 @@ func TestSelectCandidatesKeepsOrderWithoutSignal(t *testing.T) {
 }
 
 func TestIsUnknownDestination(t *testing.T) {
-	for _, s := range []string{"(unknown destination)", "unknown destination", "  (Unknown Destination)  "} {
+	trueCases := []string{
+		"",
+		"unknown",
+		"UNKNOWN",
+		"  Unknown  ",
+		"unknown destination",
+		"(unknown destination)",
+		"  (Unknown Destination)  ",
+		"no name",
+		"(no name)",
+		"n/a",
+		"N/A",
+	}
+	for _, s := range trueCases {
 		if !IsUnknownDestination(s) {
 			t.Errorf("IsUnknownDestination(%q) = false, want true", s)
 		}
 	}
-	for _, s := range []string{"", "(no name)", "Amazon", "unknown"} {
+	falseCases := []string{"Amazon", "Mercadona", "Payee Name"}
+	for _, s := range falseCases {
 		if IsUnknownDestination(s) {
 			t.Errorf("IsUnknownDestination(%q) = true, want false", s)
 		}
@@ -73,7 +87,7 @@ func TestIsUnknownDestination(t *testing.T) {
 }
 
 func TestIsBlankNameIncludesUnknownDestination(t *testing.T) {
-	for _, s := range []string{"(unknown destination)", "unknown destination"} {
+	for _, s := range []string{"(unknown destination)", "unknown destination", "unknown", "(no name)", "n/a"} {
 		if !isBlankName(s) {
 			t.Errorf("isBlankName(%q) = false, want true", s)
 		}

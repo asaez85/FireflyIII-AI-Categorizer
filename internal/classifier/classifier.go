@@ -53,11 +53,7 @@ func isBlankName(s string) bool {
 // used when a withdrawal has no known payee. When destination matching is enabled,
 // these placeholders are treated as blank so the AI/Jev can infer the real payee.
 func IsUnknownDestination(s string) bool {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "(unknown destination)", "unknown destination":
-		return true
-	}
-	return false
+	return isBlankName(s)
 }
 
 // Category is a classifiable Firefly III category with optional notes that
