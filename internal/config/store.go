@@ -28,6 +28,7 @@ type StoredConfig struct {
 	HistoryContextLimit     int  `json:"history_context_limit,omitempty"`
 	HistoryLookbackDays     int  `json:"history_lookback_days,omitempty"`
 	DestinationMatchEnabled *bool  `json:"destination_match_enabled,omitempty"`
+	AutoBudgetEnabled       *bool  `json:"auto_budget_enabled,omitempty"`
 	SearchEngine            string `json:"search_engine,omitempty"` // "google", "duckduckgo", or "" (disabled)
 	WorkerConcurrency       int    `json:"worker_concurrency,omitempty"`
 	BatchConcurrency        int    `json:"batch_concurrency,omitempty"`

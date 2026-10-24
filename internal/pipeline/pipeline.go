@@ -40,6 +40,7 @@ type Pipeline struct {
 	contextN   int
 
 	destinationMatch bool
+	autoBudgetEnabled bool
 
 	// Short-lived category cache to avoid re-fetching on every job in a batch.
 	catMu      sync.RWMutex
@@ -50,6 +51,11 @@ type Pipeline struct {
 	acctMu      sync.RWMutex
 	acctCache   []firefly.Account
 	acctFetched time.Time
+
+	// Short-lived budget cache (only used when autoBudgetEnabled is true).
+	budgetMu      sync.RWMutex
+	budgetCache   []firefly.Budget
+	budgetFetched time.Time
 }
 
 func New(
@@ -59,6 +65,7 @@ func New(
 	reg *job.Registry,
 	contextN int,
 	destinationMatch bool,
+	autoBudgetEnabled bool,
 ) *Pipeline {
 	return &Pipeline{
 		firefly:          fc,
@@ -67,6 +74,7 @@ func New(
 		registry:         reg,
 		contextN:         contextN,
 		destinationMatch: destinationMatch,
+		autoBudgetEnabled: autoBudgetEnabled,
 	}
 }
 
@@ -181,6 +189,9 @@ func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, txn firefly.T
 		if historyMatchDestID != "" {
 			outcome.DestConfidence = "CLASSIFIED"
 		}
+		if p.autoBudgetEnabled {
+			p.assignBudgetFromCategory(ctx, &outcome)
+		}
 		if err := p.firefly.UpdateTransaction(ctx, txn, outcome); err != nil {
 			p.registry.SetFailed(j.ID, err.Error())
 			return fmt.Errorf("update transaction: %w", err)
@@ -267,6 +278,10 @@ func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, txn firefly.T
 		outcome.Category = historyMatchCat
 		outcome.Outcome = string(classifier.Classified)
 		outcome.Reason = historyOverrideReason(histCatCount, result.Source)
+	}
+
+	if p.autoBudgetEnabled && outcome.Outcome != string(classifier.NeedsReview) {
+		p.assignBudgetFromCategory(ctx, &outcome)
 	}
 
 	// Process destination account result (when enabled and valid).
@@ -562,6 +577,52 @@ func (p *Pipeline) getExpenseAccounts(ctx context.Context) ([]firefly.Account, e
 	p.acctCache = accts
 	p.acctFetched = time.Now()
 	return accts, nil
+}
+
+// assignBudgetFromCategory resolves an active budget whose name matches the
+// outcome category and writes its ID into the outcome. Errors are logged but
+// not fatal — budget assignment is a best-effort enhancement.
+func (p *Pipeline) assignBudgetFromCategory(ctx context.Context, outcome *firefly.UpdateOutcome) {
+	if outcome == nil || outcome.Category == "" {
+		return
+	}
+	budgets, err := p.getBudgets(ctx)
+	if err != nil {
+		slog.Warn("failed to fetch budgets, continuing without auto-budget assignment", "error", err)
+		return
+	}
+	for _, b := range budgets {
+		if strings.EqualFold(b.Name, outcome.Category) {
+			outcome.BudgetID = b.ID
+			return
+		}
+	}
+}
+
+// getBudgets returns cached budgets, re-fetching when the TTL expires.
+func (p *Pipeline) getBudgets(ctx context.Context) ([]firefly.Budget, error) {
+	p.budgetMu.RLock()
+	if !p.budgetFetched.IsZero() && time.Since(p.budgetFetched) < categoryTTL {
+		budgets := p.budgetCache
+		p.budgetMu.RUnlock()
+		return budgets, nil
+	}
+	p.budgetMu.RUnlock()
+
+	p.budgetMu.Lock()
+	defer p.budgetMu.Unlock()
+
+	if !p.budgetFetched.IsZero() && time.Since(p.budgetFetched) < categoryTTL {
+		return p.budgetCache, nil
+	}
+
+	budgets, err := p.firefly.GetBudgets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	p.budgetCache = budgets
+	p.budgetFetched = time.Now()
+	return budgets, nil
 }
 
 // SuggestTransfer proposes the destination asset account for converting a

@@ -241,6 +241,30 @@ func (c *Client) GetCategories(ctx context.Context) ([]Category, error) {
 	return categories, nil
 }
 
+// GetBudgets fetches all active budgets, paginating through all pages.
+func (c *Client) GetBudgets(ctx context.Context) ([]Budget, error) {
+	var budgets []Budget
+	for page := 1; ; page++ {
+		u := fmt.Sprintf("%s/api/v1/budgets?page=%d", c.baseURL, page)
+		var resp budgetsResponse
+		if err := c.get(ctx, u, &resp); err != nil {
+			return nil, fmt.Errorf("get budgets page %d: %w", page, err)
+		}
+		for _, item := range resp.Data {
+			if item.Attributes.Active {
+				budgets = append(budgets, Budget{
+					ID:   item.ID,
+					Name: item.Attributes.Name,
+				})
+			}
+		}
+		if page >= resp.Meta.Pagination.TotalPages {
+			break
+		}
+	}
+	return budgets, nil
+}
+
 // GetCategorizedWithdrawals fetches all categorized withdrawals within the lookback window.
 func (c *Client) GetCategorizedWithdrawals(ctx context.Context, lookbackDays int) ([]Transaction, error) {
 	start := time.Now().AddDate(0, 0, -lookbackDays).Format("2006-01-02")
@@ -517,6 +541,7 @@ func (c *Client) UpdateTransaction(ctx context.Context, txn Transaction, outcome
 		TransactionJournalID string   `json:"transaction_journal_id"`
 		Tags                 []string `json:"tags"`
 		CategoryID           string   `json:"category_id,omitempty"`
+		BudgetID             string   `json:"budget_id,omitempty"`
 		DestinationID        string   `json:"destination_id,omitempty"`
 		Notes                string   `json:"notes,omitempty"`
 	}
@@ -545,6 +570,9 @@ func (c *Client) UpdateTransaction(ctx context.Context, txn Transaction, outcome
 		su := splitUpdate{TransactionJournalID: s.JournalID, Tags: tags}
 		if outcome.Outcome != "NEEDS_REVIEW" && outcome.CategoryID != "" {
 			su.CategoryID = outcome.CategoryID
+		}
+		if outcome.BudgetID != "" {
+			su.BudgetID = outcome.BudgetID
 		}
 		if outcome.DestinationID != "" {
 			su.DestinationID = outcome.DestinationID
@@ -724,6 +752,21 @@ type paginationMeta struct {
 
 type meta struct {
 	Pagination paginationMeta `json:"pagination"`
+}
+
+type budgetAttributes struct {
+	Name   string `json:"name"`
+	Active bool   `json:"active"`
+}
+
+type budgetData struct {
+	ID         string         `json:"id"`
+	Attributes budgetAttributes `json:"attributes"`
+}
+
+type budgetsResponse struct {
+	Data []budgetData `json:"data"`
+	Meta meta         `json:"meta"`
 }
 
 type categoryAttributes struct {

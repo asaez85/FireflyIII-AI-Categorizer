@@ -45,6 +45,7 @@ type Config struct {
 	JevLowThreshold  float64
 
 	DestinationMatchEnabled bool
+	AutoBudgetEnabled       bool
 
 	SearchEngine string // "google", "duckduckgo", or "" (disabled)
 
@@ -74,6 +75,7 @@ func Load() (*Config, *Store, error) {
 		HistoryContextLimit:     getEnvInt("HISTORY_CONTEXT_LIMIT", 5),
 		HistoryLookbackDays:     getEnvInt("HISTORY_LOOKBACK_DAYS", 90),
 		DestinationMatchEnabled: getEnv("DESTINATION_MATCH_ENABLED", "false") == "true",
+		AutoBudgetEnabled:       getEnv("AUTO_BUDGET_ENABLED", "false") == "true",
 		WorkerConcurrency:       getEnvInt("WORKER_CONCURRENCY", 1),
 		BatchConcurrency:        getEnvInt("BATCH_CONCURRENCY", 5),
 		JevEnabled:              getEnv("JEV_ENABLED", "false") == "true",
@@ -169,6 +171,9 @@ func ApplyStored(cfg *Config, sc StoredConfig) {
 	// We track this via a pointer so the store can signal "was configured".
 	if sc.DestinationMatchEnabled != nil {
 		cfg.DestinationMatchEnabled = *sc.DestinationMatchEnabled
+	}
+	if sc.AutoBudgetEnabled != nil {
+		cfg.AutoBudgetEnabled = *sc.AutoBudgetEnabled
 	}
 	if sc.SearchEngine != "" {
 		cfg.SearchEngine = sc.SearchEngine

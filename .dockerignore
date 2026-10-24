@@ -1,0 +1,26 @@
+# Git
+.git
+.gitignore
+
+# Documentation (not needed in production image)
+*.md
+
+# Development files
+.env
+.env.*
+!.env.example
+config.json.dev
+DEVELOPMENT.md
+
+# Binary (built inside the container)
+firefly-ai-categorize
+
+# IDE/Editor files
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db

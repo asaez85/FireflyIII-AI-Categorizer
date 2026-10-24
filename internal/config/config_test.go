@@ -5,6 +5,41 @@ import (
 	"testing"
 )
 
+func TestLoadAutoBudgetDefaultAndEnv(t *testing.T) {
+	t.Setenv("CONFIG_FILE", t.TempDir()+"/config.json")
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AutoBudgetEnabled {
+		t.Errorf("default AutoBudgetEnabled should be false, got %+v", cfg)
+	}
+
+	t.Setenv("AUTO_BUDGET_ENABLED", "true")
+	cfg, _, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AutoBudgetEnabled {
+		t.Errorf("env AUTO_BUDGET_ENABLED=true should be true, got %+v", cfg)
+	}
+}
+
+func TestApplyStoredAutoBudget(t *testing.T) {
+	on := true
+	cfg := &Config{AutoBudgetEnabled: false}
+	ApplyStored(cfg, StoredConfig{AutoBudgetEnabled: &on})
+	if !cfg.AutoBudgetEnabled {
+		t.Errorf("stored AutoBudgetEnabled=true should override, got %+v", cfg)
+	}
+
+	cfg = &Config{AutoBudgetEnabled: true}
+	ApplyStored(cfg, StoredConfig{})
+	if !cfg.AutoBudgetEnabled {
+		t.Errorf("empty stored AutoBudgetEnabled should not override, got %+v", cfg)
+	}
+}
+
 func TestLoadJevDefaultsAndEnv(t *testing.T) {
 	t.Setenv("CONFIG_FILE", t.TempDir()+"/config.json")
 	cfg, _, err := Load()

@@ -354,6 +354,7 @@ type configResponse struct {
 	Configured          bool   `json:"configured"`
 
 	DestinationMatchEnabled bool `json:"destination_match_enabled"`
+	AutoBudgetEnabled       bool `json:"auto_budget_enabled"`
 
 	SearchEngine string `json:"search_engine"`
 
@@ -387,6 +388,7 @@ func (h *Handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 		Configured:          cfg.IsConfigured(),
 
 		DestinationMatchEnabled: cfg.DestinationMatchEnabled,
+		AutoBudgetEnabled:       cfg.AutoBudgetEnabled,
 
 		SearchEngine: cfg.SearchEngine,
 
@@ -421,6 +423,7 @@ type configUpdateRequest struct {
 	CustomSystemContext *string `json:"custom_system_context"`
 
 	DestinationMatchEnabled *bool `json:"destination_match_enabled"`
+	AutoBudgetEnabled       *bool `json:"auto_budget_enabled"`
 
 	SearchEngine *string `json:"search_engine"`
 
@@ -1203,7 +1206,7 @@ func (h *Handler) reloadClients() error {
 		return fmt.Errorf("classifier init: %w", err)
 	}
 
-	pipe := pipeline.New(fc, cl, ca, h.registry, cfg.HistoryContextLimit, cfg.DestinationMatchEnabled)
+	pipe := pipeline.New(fc, cl, ca, h.registry, cfg.HistoryContextLimit, cfg.DestinationMatchEnabled, cfg.AutoBudgetEnabled)
 
 	h.mu.Lock()
 	h.fc = fc
@@ -1280,6 +1283,9 @@ func mergeConfigUpdate(existing config.StoredConfig, req configUpdateRequest) co
 	}
 	if req.DestinationMatchEnabled != nil {
 		existing.DestinationMatchEnabled = req.DestinationMatchEnabled
+	}
+	if req.AutoBudgetEnabled != nil {
+		existing.AutoBudgetEnabled = req.AutoBudgetEnabled
 	}
 	if req.SearchEngine != nil {
 		existing.SearchEngine = *req.SearchEngine

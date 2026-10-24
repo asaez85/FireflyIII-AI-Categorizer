@@ -134,7 +134,7 @@ func TestRunWithOptionsClearsUnknownDestination(t *testing.T) {
 			},
 		},
 	}
-	pipe := New(fc, cl, ca, reg, 1, true)
+	pipe := New(fc, cl, ca, reg, 1, true, false)
 
 	if err := pipe.RunWithOptions(context.Background(), j, txn, RunOptions{ClassifyCategory: true, MatchDestination: true}); err != nil {
 		t.Fatalf("RunWithOptions: %v", err)
@@ -180,7 +180,7 @@ func TestRunWithOptionsKeepsUnknownDestinationWhenDisabled(t *testing.T) {
 			Category: "Groceries",
 		},
 	}
-	pipe := New(fc, cl, ca, reg, 1, false)
+	pipe := New(fc, cl, ca, reg, 1, false, false)
 
 	if err := pipe.RunWithOptions(context.Background(), j, txn, RunOptions{ClassifyCategory: true, MatchDestination: false}); err != nil {
 		t.Fatalf("RunWithOptions: %v", err)
@@ -227,7 +227,7 @@ func TestRunWithOptionsClearsCaseInsensitiveUnknownDestination(t *testing.T) {
 			},
 		},
 	}
-	pipe := New(fc, cl, ca, reg, 1, true)
+	pipe := New(fc, cl, ca, reg, 1, true, false)
 
 	if err := pipe.RunWithOptions(context.Background(), j, txn, RunOptions{ClassifyCategory: true, MatchDestination: true}); err != nil {
 		t.Fatalf("RunWithOptions: %v", err)
@@ -291,9 +291,9 @@ func encodeTransactions(txns []firefly.Transaction) []map[string]interface{} {
 }
 
 // newMockFireflyServer returns a server configured with the given accounts,
-// categories and past transactions, and records the body of any transaction PUT
+// categories, budgets and past transactions, and records the body of any transaction PUT
 // in lastBody.
-func newMockFireflyServer(t *testing.T, categories []firefly.Category, accounts []firefly.Account, txns []firefly.Transaction, lastBody *[]byte) *httptest.Server {
+func newMockFireflyServer(t *testing.T, categories []firefly.Category, accounts []firefly.Account, budgets []firefly.Budget, txns []firefly.Transaction, lastBody *[]byte) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -305,6 +305,15 @@ func newMockFireflyServer(t *testing.T, categories []firefly.Category, accounts 
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"data": catData,
 				"meta": map[string]interface{}{"pagination": map[string]interface{}{"total_pages": 1, "total": len(categories)}},
+			})
+		case r.URL.Path == "/api/v1/budgets":
+			budgetData := make([]map[string]interface{}, len(budgets))
+			for i, b := range budgets {
+				budgetData[i] = map[string]interface{}{"id": b.ID, "attributes": map[string]interface{}{"name": b.Name, "active": true}}
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": budgetData,
+				"meta": map[string]interface{}{"pagination": map[string]interface{}{"total_pages": 1, "total": len(budgets)}},
 			})
 		case strings.HasPrefix(r.URL.Path, "/api/v1/accounts"):
 			acctData := make([]map[string]interface{}, len(accounts))
@@ -383,7 +392,7 @@ func TestRunWithOptionsIgnoresUnknownDestinationHistory(t *testing.T) {
 		}}},
 	}
 
-	server := newMockFireflyServer(t, categories, accounts, histTxns, &lastBody)
+	server := newMockFireflyServer(t, categories, accounts, nil, histTxns, &lastBody)
 	defer server.Close()
 
 	fc := firefly.New(server.URL, "token", "ai")
@@ -417,7 +426,7 @@ func TestRunWithOptionsIgnoresUnknownDestinationHistory(t *testing.T) {
 			},
 		},
 	}
-	pipe := New(fc, cl, ca, reg, 1, true)
+	pipe := New(fc, cl, ca, reg, 1, true, false)
 
 	if err := pipe.RunWithOptions(context.Background(), j, txn, RunOptions{ClassifyCategory: true, MatchDestination: true}); err != nil {
 		t.Fatalf("RunWithOptions: %v", err)
@@ -489,7 +498,7 @@ func TestRunWithOptionsRejectsAccountNamedUnknown(t *testing.T) {
 		}}},
 	}
 
-	server := newMockFireflyServer(t, categories, accounts, histTxns, &lastBody)
+	server := newMockFireflyServer(t, categories, accounts, nil, histTxns, &lastBody)
 	defer server.Close()
 
 	fc := firefly.New(server.URL, "token", "ai")
@@ -523,7 +532,7 @@ func TestRunWithOptionsRejectsAccountNamedUnknown(t *testing.T) {
 			},
 		},
 	}
-	pipe := New(fc, cl, ca, reg, 1, true)
+	pipe := New(fc, cl, ca, reg, 1, true, false)
 
 	if err := pipe.RunWithOptions(context.Background(), j, txn, RunOptions{ClassifyCategory: true, MatchDestination: true}); err != nil {
 		t.Fatalf("RunWithOptions: %v", err)
@@ -543,6 +552,260 @@ func TestRunWithOptionsRejectsAccountNamedUnknown(t *testing.T) {
 	}
 	if body.Transactions[0].DestinationID != "acc-real" {
 		t.Errorf("DestinationID = %q, want acc-real", body.Transactions[0].DestinationID)
+	}
+}
+
+func TestAutoBudgetFromHistoryMatch(t *testing.T) {
+	var lastBody []byte
+	categories := []firefly.Category{{ID: "cat-1", Name: "Supermercado"}}
+	budgets := []firefly.Budget{{ID: "budget-1", Name: "Supermercado"}}
+	accounts := []firefly.Account{{ID: "acc-1", Name: "Supermarket"}}
+
+	desc := "Weekly shopping"
+	histTxns := []firefly.Transaction{
+		{ID: "old-1", Splits: []firefly.Split{{
+			JournalID: "j-old-1", Type: "withdrawal", Description: desc,
+			DestinationName: "Supermarket", DestinationID: "acc-1", Amount: "42.50",
+			CategoryName: "Supermercado", CategoryID: "cat-1",
+		}}},
+		{ID: "old-2", Splits: []firefly.Split{{
+			JournalID: "j-old-2", Type: "withdrawal", Description: desc,
+			DestinationName: "Supermarket", DestinationID: "acc-1", Amount: "42.50",
+			CategoryName: "Supermercado", CategoryID: "cat-1",
+		}}},
+		{ID: "old-3", Splits: []firefly.Split{{
+			JournalID: "j-old-3", Type: "withdrawal", Description: desc,
+			DestinationName: "Supermarket", DestinationID: "acc-1", Amount: "42.50",
+			CategoryName: "Supermercado", CategoryID: "cat-1",
+		}}},
+	}
+
+	server := newMockFireflyServer(t, categories, accounts, budgets, histTxns, &lastBody)
+	defer server.Close()
+
+	fc := firefly.New(server.URL, "token", "ai")
+	reg := job.NewRegistry()
+	ca := cache.New(fc, 0, 1)
+
+	amount := 42.50
+	j := reg.Create("txn-new", "", "Supermarket", desc, &amount)
+	txn := firefly.Transaction{
+		ID: "txn-new",
+		Splits: []firefly.Split{{
+			JournalID:       "j-new",
+			Description:     desc,
+			DestinationName: "Supermarket",
+			Amount:          "42.50",
+		}},
+	}
+
+	cl := &assertingClassifier{
+		t:                   t,
+		wantDestinationName: "",
+		wantDestinationOnly: true,
+		result: classifier.Result{
+			Outcome:  classifier.Classified,
+			Category: "Ignored",
+		},
+	}
+	pipe := New(fc, cl, ca, reg, 1, true, true)
+
+	if err := pipe.RunWithOptions(context.Background(), j, txn, RunOptions{ClassifyCategory: true, MatchDestination: true}); err != nil {
+		t.Fatalf("RunWithOptions: %v", err)
+	}
+
+	if cl.called {
+		t.Fatalf("classifier was called; transaction should have been auto-matched from history")
+	}
+
+	var body struct {
+		Transactions []struct {
+			CategoryID string `json:"category_id"`
+			BudgetID   string `json:"budget_id"`
+		} `json:"transactions"`
+	}
+	if err := json.Unmarshal(lastBody, &body); err != nil {
+		t.Fatalf("unmarshal update body: %v", err)
+	}
+	if len(body.Transactions) != 1 {
+		t.Fatalf("got %d transactions in update body, want 1", len(body.Transactions))
+	}
+	if body.Transactions[0].CategoryID != "cat-1" {
+		t.Errorf("CategoryID = %q, want cat-1", body.Transactions[0].CategoryID)
+	}
+	if body.Transactions[0].BudgetID != "budget-1" {
+		t.Errorf("BudgetID = %q, want budget-1", body.Transactions[0].BudgetID)
+	}
+}
+
+func TestAutoBudgetFromLLMClassification(t *testing.T) {
+	var lastBody []byte
+	categories := []firefly.Category{{ID: "cat-1", Name: "Supermercado"}}
+	budgets := []firefly.Budget{{ID: "budget-1", Name: "supermercado"}}
+	accounts := []firefly.Account{{ID: "acc-1", Name: "Supermarket"}}
+
+	server := newMockFireflyServer(t, categories, accounts, budgets, nil, &lastBody)
+	defer server.Close()
+
+	fc := firefly.New(server.URL, "token", "ai")
+	reg := job.NewRegistry()
+	ca := cache.New(fc, 0, 1)
+
+	amount := 42.50
+	j := reg.Create("txn-llm", "", "Supermarket", "Weekly shopping", &amount)
+	txn := firefly.Transaction{
+		ID: "txn-llm",
+		Splits: []firefly.Split{{
+			JournalID:       "j-llm",
+			Description:     "Weekly shopping",
+			DestinationName: "Supermarket",
+			Amount:          "42.50",
+		}},
+	}
+
+	cl := &recordingClassifier{
+		t:                   t,
+		wantDestinationName: "Supermarket",
+		result: classifier.Result{
+			Outcome:  classifier.Classified,
+			Category: "Supermercado",
+		},
+	}
+	pipe := New(fc, cl, ca, reg, 1, false, true)
+
+	if err := pipe.RunWithOptions(context.Background(), j, txn, RunOptions{ClassifyCategory: true, MatchDestination: false}); err != nil {
+		t.Fatalf("RunWithOptions: %v", err)
+	}
+
+	var body struct {
+		Transactions []struct {
+			CategoryID string `json:"category_id"`
+			BudgetID   string `json:"budget_id"`
+		} `json:"transactions"`
+	}
+	if err := json.Unmarshal(lastBody, &body); err != nil {
+		t.Fatalf("unmarshal update body: %v", err)
+	}
+	if len(body.Transactions) != 1 {
+		t.Fatalf("got %d transactions in update body, want 1", len(body.Transactions))
+	}
+	if body.Transactions[0].CategoryID != "cat-1" {
+		t.Errorf("CategoryID = %q, want cat-1", body.Transactions[0].CategoryID)
+	}
+	if body.Transactions[0].BudgetID != "budget-1" {
+		t.Errorf("BudgetID = %q, want budget-1", body.Transactions[0].BudgetID)
+	}
+}
+
+func TestAutoBudgetDisabledSkipsAssignment(t *testing.T) {
+	var lastBody []byte
+	categories := []firefly.Category{{ID: "cat-1", Name: "Supermercado"}}
+	budgets := []firefly.Budget{{ID: "budget-1", Name: "Supermercado"}}
+	accounts := []firefly.Account{{ID: "acc-1", Name: "Supermarket"}}
+
+	server := newMockFireflyServer(t, categories, accounts, budgets, nil, &lastBody)
+	defer server.Close()
+
+	fc := firefly.New(server.URL, "token", "ai")
+	reg := job.NewRegistry()
+	ca := cache.New(fc, 0, 1)
+
+	amount := 42.50
+	j := reg.Create("txn-off", "", "Supermarket", "Weekly shopping", &amount)
+	txn := firefly.Transaction{
+		ID: "txn-off",
+		Splits: []firefly.Split{{
+			JournalID:       "j-off",
+			Description:     "Weekly shopping",
+			DestinationName: "Supermarket",
+			Amount:          "42.50",
+		}},
+	}
+
+	cl := &recordingClassifier{
+		t:                   t,
+		wantDestinationName: "Supermarket",
+		result: classifier.Result{
+			Outcome:  classifier.Classified,
+			Category: "Supermercado",
+		},
+	}
+	pipe := New(fc, cl, ca, reg, 1, false, false)
+
+	if err := pipe.RunWithOptions(context.Background(), j, txn, RunOptions{ClassifyCategory: true, MatchDestination: false}); err != nil {
+		t.Fatalf("RunWithOptions: %v", err)
+	}
+
+	var body struct {
+		Transactions []struct {
+			CategoryID string `json:"category_id"`
+			BudgetID   string `json:"budget_id"`
+		} `json:"transactions"`
+	}
+	if err := json.Unmarshal(lastBody, &body); err != nil {
+		t.Fatalf("unmarshal update body: %v", err)
+	}
+	if len(body.Transactions) != 1 {
+		t.Fatalf("got %d transactions in update body, want 1", len(body.Transactions))
+	}
+	if body.Transactions[0].BudgetID != "" {
+		t.Errorf("BudgetID = %q, want empty when auto-budget is disabled", body.Transactions[0].BudgetID)
+	}
+}
+
+func TestAutoBudgetNoMatchLeavesBudgetEmpty(t *testing.T) {
+	var lastBody []byte
+	categories := []firefly.Category{{ID: "cat-1", Name: "Supermercado"}}
+	budgets := []firefly.Budget{{ID: "budget-1", Name: "Hogar"}}
+	accounts := []firefly.Account{{ID: "acc-1", Name: "Supermarket"}}
+
+	server := newMockFireflyServer(t, categories, accounts, budgets, nil, &lastBody)
+	defer server.Close()
+
+	fc := firefly.New(server.URL, "token", "ai")
+	reg := job.NewRegistry()
+	ca := cache.New(fc, 0, 1)
+
+	amount := 42.50
+	j := reg.Create("txn-nomatch", "", "Supermarket", "Weekly shopping", &amount)
+	txn := firefly.Transaction{
+		ID: "txn-nomatch",
+		Splits: []firefly.Split{{
+			JournalID:       "j-nomatch",
+			Description:     "Weekly shopping",
+			DestinationName: "Supermarket",
+			Amount:          "42.50",
+		}},
+	}
+
+	cl := &recordingClassifier{
+		t:                   t,
+		wantDestinationName: "Supermarket",
+		result: classifier.Result{
+			Outcome:  classifier.Classified,
+			Category: "Supermercado",
+		},
+	}
+	pipe := New(fc, cl, ca, reg, 1, false, true)
+
+	if err := pipe.RunWithOptions(context.Background(), j, txn, RunOptions{ClassifyCategory: true, MatchDestination: false}); err != nil {
+		t.Fatalf("RunWithOptions: %v", err)
+	}
+
+	var body struct {
+		Transactions []struct {
+			CategoryID string `json:"category_id"`
+			BudgetID   string `json:"budget_id"`
+		} `json:"transactions"`
+	}
+	if err := json.Unmarshal(lastBody, &body); err != nil {
+		t.Fatalf("unmarshal update body: %v", err)
+	}
+	if len(body.Transactions) != 1 {
+		t.Fatalf("got %d transactions in update body, want 1", len(body.Transactions))
+	}
+	if body.Transactions[0].BudgetID != "" {
+		t.Errorf("BudgetID = %q, want empty when no budget name matches", body.Transactions[0].BudgetID)
 	}
 }
 

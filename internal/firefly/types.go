@@ -7,6 +7,12 @@ type Category struct {
 	Notes string `json:"notes,omitempty"`
 }
 
+// Budget is a Firefly III budget.
+type Budget struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 // Account is a Firefly III account (used here for expense/revenue accounts).
 type Account struct {
 	ID   string `json:"id"`
@@ -42,6 +48,7 @@ type UpdateOutcome struct {
 	Outcome        string // "CLASSIFIED" | "ASSUMED" | "NEEDS_REVIEW"
 	Category       string
 	CategoryID     string
+	BudgetID       string
 	DestinationID  string // non-empty when destination account was matched or created
 	DestConfidence string // "CLASSIFIED" | "ASSUMED" — destination confidence (independent of Outcome)
 	Reason         string
