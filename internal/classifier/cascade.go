@@ -74,16 +74,22 @@ func (c *CascadeClassifier) decide(ctx context.Context, req Request, q jevQuery,
 	jevPrompt := prettyJSON(q.req)
 	jevResp := prettyRaw(resp.Raw)
 
-	// Middle-band categories go to the LLM. So do destination-only callers
-	// whenever Jev is unsure about the payee, whatever the category band.
+	// Middle-band categories go to the LLM. So do callers requesting destination
+	// matching whenever Jev is unsure about the payee, whatever the category band.
 	escalate := d.categoryP >= c.th.Low && d.categoryP < c.th.High
-	if req.DestinationOnly && d.dest == nil && !d.destNew {
+	if (req.DestinationOnly || req.DestinationMatching) && !req.CategoryOnly && d.dest == nil && !d.destNew {
 		escalate = true
 	}
 	if escalate {
 		llmRes, err := c.llm.Classify(ctx, req)
 		if err != nil {
 			return Result{}, err
+		}
+		if llmRes.Category == "" && d.categoryP >= c.th.High {
+			llmRes.Category = d.category.Name
+			if llmRes.Outcome == NeedsReview {
+				llmRes.Outcome = Classified
+			}
 		}
 		if llmRes.Destination == nil && d.dest != nil {
 			llmRes.Destination = matchDestination(d.dest)

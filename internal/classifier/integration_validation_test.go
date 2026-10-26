@@ -258,7 +258,7 @@ func TestCascadeEndToEndWithRealData(t *testing.T) {
 			wantLLMCalls: 1,
 		},
 		{
-			name:         "Unknown payee low confidence -> NEEDS_REVIEW",
+			name:         "Unknown payee low confidence -> LLM fallback",
 			desc:         "ADEUDO SEPA Misterioso // PAGO DESCONOCIDO",
 			destName:     "MISTERIOSO PAYEE",
 			amount:       99.99,
@@ -266,10 +266,10 @@ func TestCascadeEndToEndWithRealData(t *testing.T) {
 			jevCatProb:   0.30,
 			jevDestLabel: "",
 			jevDestProb:  0,
-			wantOutcome:  NeedsReview,
+			wantOutcome:  Assumed,
 			wantCategory: "",
 			wantDestName: "",
-			wantLLMCalls: 0,
+			wantLLMCalls: 1,
 		},
 		{
 			name:         "Electronics high confidence -> CLASSIFIED",

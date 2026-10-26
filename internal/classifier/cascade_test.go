@@ -114,10 +114,13 @@ func TestCascadeHighWithConfidentMatch(t *testing.T) {
 
 func TestCascadeHighWithUnsureMatch(t *testing.T) {
 	jev := &fakeDecider{fn: respond(t, "Groceries", map[string]float64{"Groceries": 0.92}, "Mercadona", map[string]float64{"Mercadona": 0.6})}
-	llm := &fakeLLM{}
+	llm := &fakeLLM{res: Result{Outcome: NeedsReview, Category: ""}}
 	res, _ := newCascade(llm, jev, DefaultThresholds, "").Classify(context.Background(), destReq())
-	if llm.calls != 0 || res.Destination != nil || res.Outcome != Classified {
-		t.Errorf("result = %+v, calls = %d", res, llm.calls)
+	if llm.calls != 1 || res.Source != SourceJevLLM {
+		t.Errorf("destination matching must escalate when payee is unsure: result = %+v, calls = %d", res, llm.calls)
+	}
+	if res.Outcome != Classified || res.Category != "Groceries" || res.Destination != nil {
+		t.Errorf("Jev category preserved and destination left unset: result = %+v", res)
 	}
 }
 
@@ -315,6 +318,25 @@ func TestCascadeDestinationOnlyConfidentMatchSkipsLLM(t *testing.T) {
 	res, _ := newCascade(llm, jev, DefaultThresholds, "").Classify(context.Background(), req)
 	if llm.calls != 0 || res.Destination == nil || res.Destination.Name != "Mercadona" {
 		t.Errorf("result = %+v calls = %d", res, llm.calls)
+	}
+}
+
+func TestCascadeDestinationMatchingEscalatesWhenPayeeUnsureEvenIfCategoryHigh(t *testing.T) {
+	llmDest := &DestinationResult{Name: "Amazon", Action: "MATCH", Confidence: "CLASSIFIED"}
+	jev := &fakeDecider{fn: respond(t, "Groceries", map[string]float64{"Groceries": 0.92}, "Mercadona", map[string]float64{"Mercadona": 0.6})}
+	llm := &fakeLLM{res: Result{Outcome: NeedsReview, Category: "", Destination: llmDest}}
+	res, err := newCascade(llm, jev, DefaultThresholds, "").Classify(context.Background(), destReq())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if llm.calls != 1 {
+		t.Errorf("LLM calls = %d, want 1", llm.calls)
+	}
+	if res.Destination != llmDest || res.Source != SourceJevLLM {
+		t.Errorf("result = %+v calls = %d", res, llm.calls)
+	}
+	if res.Category != "Groceries" || res.Outcome != Classified {
+		t.Errorf("Jev high-confidence category must be preserved: outcome=%v category=%q", res.Outcome, res.Category)
 	}
 }
 
