@@ -38,6 +38,42 @@ func TestResolveMatchedAccountPrefersID(t *testing.T) {
 	}
 }
 
+func TestResolveMatchedAccountCleanNormalized(t *testing.T) {
+	accounts := []firefly.Account{
+		{ID: "pp-1", Name: "PayPal Europe S.a.r.l. et Cie S.C.A"},
+		{ID: "pp-2", Name: "PayPal (Europe) S.a r.l. et Cie, S.C.A."},
+	}
+	dest := &classifier.DestinationResult{Name: "PayPal Europe S.a.r.l. et Cie, S.C.A."}
+	got := resolveMatchedAccount(accounts, dest)
+	if got.ID != "pp-1" {
+		t.Errorf("clean normalized match: got %+v, want ID=pp-1", got)
+	}
+}
+
+func TestResolveMatchedAccountAlphaNumOnly(t *testing.T) {
+	accounts := []firefly.Account{
+		{ID: "sarl", Name: "Some Company SARL"},
+	}
+	// No spaces or punctuation between words — clean normalization cannot match,
+	// but the alphanumeric-only form does.
+	dest := &classifier.DestinationResult{Name: "SomeCompanySARL"}
+	got := resolveMatchedAccount(accounts, dest)
+	if got.ID != "sarl" || got.Name != "Some Company SARL" {
+		t.Errorf("alphanumeric match: got %+v, want ID=sarl Name='Some Company SARL'", got)
+	}
+}
+
+func TestResolveMatchedAccountDiacritics(t *testing.T) {
+	accounts := []firefly.Account{
+		{ID: "cafe", Name: "Café Nöel"},
+	}
+	dest := &classifier.DestinationResult{Name: "cafe noel"}
+	got := resolveMatchedAccount(accounts, dest)
+	if got.ID != "cafe" {
+		t.Errorf("diacritic match: got %+v, want ID=cafe", got)
+	}
+}
+
 func TestHistoryOverrideReason(t *testing.T) {
 	if r := historyOverrideReason(3, classifier.SourceJev); !strings.Contains(r, "Jev was consulted for destination") || strings.Contains(r, "AI was") {
 		t.Errorf("jev source: %q", r)

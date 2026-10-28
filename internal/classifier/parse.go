@@ -90,15 +90,20 @@ func parseResponse(raw, prompt string, categories []Category, expenseAccounts []
 			Action:     d.Action,
 			Confidence: d.Confidence,
 		}
-		if dest.Action != "MATCH" && dest.Action != "CREATE" {
+		switch {
+		case dest.Action != "MATCH" && dest.Action != "CREATE":
 			dest = nil // invalid action → ignore
-		}
-		if dest.Confidence != "CLASSIFIED" && dest.Confidence != "ASSUMED" {
+		case dest.Confidence != "CLASSIFIED" && dest.Confidence != "ASSUMED":
 			dest = nil // invalid confidence → ignore
-		}
-		if dest != nil && dest.Action == "MATCH" && !accountNameIn(dest.Name, expenseAccounts) {
-			// MATCH requires the name to exist in the provided list.
-			dest = nil
+		case dest.Action == "MATCH":
+			if matched, ok := MatchAccountCandidate(dest.Name, expenseAccounts); ok {
+				// Canonicalize the destination to the candidate's ID and Name.
+				dest.ID = matched.ID
+				dest.Name = matched.Name
+			} else {
+				// MATCH requires the name to exist in the provided list.
+				dest = nil
+			}
 		}
 	}
 
@@ -116,15 +121,6 @@ func parseResponse(raw, prompt string, categories []Category, expenseAccounts []
 func categoryNameIn(cats []Category, name string) bool {
 	for _, c := range cats {
 		if c.Name == name {
-			return true
-		}
-	}
-	return false
-}
-
-func accountNameIn(name string, accounts []AccountCandidate) bool {
-	for _, a := range accounts {
-		if strings.EqualFold(a.Name, name) {
 			return true
 		}
 	}

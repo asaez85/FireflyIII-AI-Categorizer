@@ -479,8 +479,9 @@ func tryDestinationHistoryMatch(history []classifier.HistoricalEntry, amount *fl
 }
 
 // resolveMatchedAccount finds the expense account for a MATCH destination,
-// preferring the account ID the classifier chose and falling back to a
-// case-insensitive name match. It returns a zero Account when nothing matches.
+// preferring the account ID the classifier chose and falling back to
+// case-insensitive, clean-normalized, and alphanumeric-only name matches.
+// It returns a zero Account when nothing matches.
 func resolveMatchedAccount(accounts []firefly.Account, dest *classifier.DestinationResult) firefly.Account {
 	if dest.ID != "" {
 		for _, a := range accounts {
@@ -489,11 +490,32 @@ func resolveMatchedAccount(accounts []firefly.Account, dest *classifier.Destinat
 			}
 		}
 	}
+
+	// Step 2: exact case-insensitive name match.
 	for _, a := range accounts {
 		if strings.EqualFold(a.Name, dest.Name) {
 			return a
 		}
 	}
+
+	// Step 3: clean normalized match.
+	cleanName := classifier.NormalizeAccountName(dest.Name)
+	for _, a := range accounts {
+		if classifier.NormalizeAccountName(a.Name) == cleanName {
+			return a
+		}
+	}
+
+	// Step 4: alphanumeric-only normalized match.
+	alphaName := classifier.NormalizeAccountNameAlphaNum(dest.Name)
+	if alphaName != "" {
+		for _, a := range accounts {
+			if classifier.NormalizeAccountNameAlphaNum(a.Name) == alphaName {
+				return a
+			}
+		}
+	}
+
 	return firefly.Account{}
 }
 
